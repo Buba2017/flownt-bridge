@@ -2,9 +2,10 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
+export const FLOWNT_EDGE_URL = 'https://qvlmidtunxthqsxfutkq.supabase.co/functions/v1';
+
 export interface BridgeConfig {
   flowntAuthToken: string;
-  flowntEdgeUrl: string;
   adapterType: 'bambu' | 'moonraker';
   adapterUrl: string;
   adapterApiKey: string;

@@ -1,10 +1,10 @@
 import fetch from 'node-fetch';
-import { BridgeConfig } from './config.js';
+import { BridgeConfig, FLOWNT_EDGE_URL } from './config.js';
 import { Adapter, PrinterSnapshot } from './adapters/types.js';
 import { bridgeState } from './server.js';
 
 async function push(cfg: BridgeConfig, snapshot: PrinterSnapshot, eventType = 'status_update'): Promise<void> {
-  const res = await fetch(`${cfg.flowntEdgeUrl}/bridge-ingest`, {
+  const res = await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -39,7 +39,7 @@ export async function runBridge(
 
   // Initial heartbeat to verify token
   try {
-    await fetch(`${cfg.flowntEdgeUrl}/bridge-ingest`, {
+    await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ auth_token: cfg.flowntAuthToken, event_type: 'heartbeat' }),

@@ -1,5 +1,5 @@
 import express from 'express';
-import { loadConfig, saveConfig, configExists, BridgeConfig } from './config.js';
+import { loadConfig, saveConfig, configExists, BridgeConfig, FLOWNT_EDGE_URL } from './config.js';
 import { PrinterSnapshot } from './adapters/types.js';
 
 const PORT = 7432;
@@ -62,9 +62,6 @@ function setupPage(error?: string) {
     <label>Flownt Auth-Token</label>
     <input name="token" type="password" placeholder="Aus Flownt kopieren (Drucker → Bearbeiten → Bridge)" value="${cfg?.flowntAuthToken ?? ''}" required/>
     <p class="hint">Öffne Flownt → Drucker bearbeiten → Bridge-Verbindung → Token kopieren</p>
-
-    <label>Flownt Server-URL</label>
-    <input name="edgeUrl" placeholder="https://xxx.supabase.co/functions/v1" value="${cfg?.flowntEdgeUrl ?? ''}" required/>
 
     <label>Drucker-Typ</label>
     <select name="adapterType" id="adapterTypeSelect" onchange="switchAdapter(this.value)">
@@ -141,9 +138,9 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
   app.get('/setup', (_req, res) => res.send(setupPage()));
 
   app.post('/setup', (req, res) => {
-    const { token, edgeUrl, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey } = req.body as Record<string, string>;
-    if (!token || !edgeUrl) {
-      return res.send(setupPage('Bitte Token und Server-URL ausfüllen.'));
+    const { token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey } = req.body as Record<string, string>;
+    if (!token) {
+      return res.send(setupPage('Bitte den Auth-Token aus Flownt einfügen.'));
     }
     const isBambu = adapterType === 'bambu';
     if (isBambu && (!bambuUrl || !bambuSerial || !bambuCode)) {
@@ -154,7 +151,6 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
     }
     const cfg: BridgeConfig = {
       flowntAuthToken: token.trim(),
-      flowntEdgeUrl: edgeUrl.trim().replace(/\/$/, ''),
       adapterType: isBambu ? 'bambu' : 'moonraker',
       adapterUrl: isBambu ? bambuUrl.trim() : moonrakerUrl.trim(),
       adapterApiKey: isBambu ? bambuCode.trim() : (moonrakerKey ?? '').trim(),
