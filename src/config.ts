@@ -9,8 +9,9 @@ function require(key: string): string {
 export const config = {
   flowntAuthToken:   require('FLOWNT_AUTH_TOKEN'),
   flowntEdgeUrl:     require('FLOWNT_EDGE_URL'),
-  adapterType:       (process.env.ADAPTER_TYPE ?? 'moonraker') as 'moonraker',
+  adapterType:       (process.env.ADAPTER_TYPE ?? 'moonraker') as 'moonraker' | 'bambu',
   adapterUrl:        require('ADAPTER_URL'),
   adapterApiKey:     process.env.ADAPTER_API_KEY ?? '',
+  adapterSerial:     process.env.ADAPTER_SERIAL ?? '',
   pollingIntervalMs: (parseInt(process.env.POLLING_INTERVAL_S ?? '30') * 1000),
 };
