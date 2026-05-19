@@ -1,32 +1,27 @@
 import fetch from 'node-fetch';
-import { config } from './config.js';
+import { BridgeConfig } from './config.js';
 import { Adapter, PrinterSnapshot } from './adapters/types.js';
+import { bridgeState } from './server.js';
 
-const INGEST_URL = `${config.flowntEdgeUrl}/bridge-ingest`;
-let consecutiveErrors = 0;
-
-async function push(snapshot: PrinterSnapshot, eventType = 'status_update'): Promise<void> {
-  const body = {
-    auth_token: config.flowntAuthToken,
-    event_type: eventType,
-    printer_status: snapshot.status,
-    print_file: snapshot.printFile,
-    progress_pct: snapshot.progressPct,
-    temp_hotend: snapshot.tempHotend,
-    temp_bed: snapshot.tempBed,
-    eta_s: snapshot.etaSec,
-  };
-
-  const res = await fetch(INGEST_URL, {
+async function push(cfg: BridgeConfig, snapshot: PrinterSnapshot, eventType = 'status_update'): Promise<void> {
+  const res = await fetch(`${cfg.flowntEdgeUrl}/bridge-ingest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      auth_token: cfg.flowntAuthToken,
+      event_type: eventType,
+      printer_status: snapshot.status,
+      print_file: snapshot.printFile,
+      progress_pct: snapshot.progressPct,
+      temp_hotend: snapshot.tempHotend,
+      temp_bed: snapshot.tempBed,
+      eta_s: snapshot.etaSec,
+    }),
     signal: AbortSignal.timeout(10_000),
   });
-
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`bridge-ingest returned ${res.status}: ${text}`);
+    throw new Error(`bridge-ingest ${res.status}: ${text}`);
   }
 }
 
@@ -34,39 +29,51 @@ function sleep(ms: number) {
   return new Promise<void>(r => setTimeout(r, ms));
 }
 
-export async function runBridge(adapter: Adapter): Promise<never> {
-  console.log('[flownt-bridge] Starting. Polling every', config.pollingIntervalMs / 1000, 's →', INGEST_URL);
+export async function runBridge(
+  adapter: Adapter,
+  cfg: BridgeConfig,
+  state: typeof bridgeState,
+  isCancelled: () => boolean,
+): Promise<void> {
+  console.log('[flownt-bridge] Verbindung wird aufgebaut…');
 
-  // Send heartbeat immediately on start
+  // Initial heartbeat to verify token
   try {
-    await fetch(INGEST_URL, {
+    await fetch(`${cfg.flowntEdgeUrl}/bridge-ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auth_token: config.flowntAuthToken, event_type: 'heartbeat' }),
+      body: JSON.stringify({ auth_token: cfg.flowntAuthToken, event_type: 'heartbeat' }),
     });
     console.log('[flownt-bridge] Auth OK ✓');
+    state.error = null;
   } catch (e) {
-    console.error('[flownt-bridge] Initial heartbeat failed:', e);
+    console.error('[flownt-bridge] Heartbeat fehlgeschlagen:', e);
+    state.error = 'Keine Verbindung zu Flownt. Bitte Token und Server-URL prüfen.';
   }
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  let consecutiveErrors = 0;
+
+  while (!isCancelled()) {
     try {
       const snapshot = await adapter.getSnapshot();
-      await push(snapshot);
+      state.snapshot = snapshot;
+      await push(cfg, snapshot);
+      state.lastPushAt = new Date();
+      state.error = null;
       consecutiveErrors = 0;
-      const statusLabel = snapshot.status.toUpperCase();
+
       const progress = snapshot.progressPct != null ? ` ${snapshot.progressPct}%` : '';
       const file = snapshot.printFile ? ` "${snapshot.printFile}"` : '';
-      console.log(`[flownt-bridge] ${new Date().toISOString()} → ${statusLabel}${file}${progress}`);
+      console.log(`[flownt-bridge] ${new Date().toISOString()} → ${snapshot.status.toUpperCase()}${file}${progress}`);
     } catch (err) {
       consecutiveErrors++;
       const backoff = Math.min(consecutiveErrors * 5_000, 60_000);
-      console.error(`[flownt-bridge] Error (${consecutiveErrors}x), retry in ${backoff / 1000}s:`, err);
+      state.error = `Verbindungsfehler (${consecutiveErrors}×). Nächster Versuch in ${backoff / 1000}s.`;
+      console.error(`[flownt-bridge] Fehler (${consecutiveErrors}×):`, err);
       await sleep(backoff);
       continue;
     }
 
-    await sleep(config.pollingIntervalMs);
+    await sleep(cfg.pollingIntervalMs);
   }
 }

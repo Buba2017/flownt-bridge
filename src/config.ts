@@ -1,17 +1,34 @@
-import 'dotenv/config';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 
-function require(key: string): string {
-  const val = process.env[key];
-  if (!val) throw new Error(`Missing required env var: ${key}`);
-  return val;
+export interface BridgeConfig {
+  flowntAuthToken: string;
+  flowntEdgeUrl: string;
+  adapterType: 'bambu' | 'moonraker';
+  adapterUrl: string;
+  adapterApiKey: string;
+  adapterSerial: string;
+  pollingIntervalMs: number;
 }
 
-export const config = {
-  flowntAuthToken:   require('FLOWNT_AUTH_TOKEN'),
-  flowntEdgeUrl:     require('FLOWNT_EDGE_URL'),
-  adapterType:       (process.env.ADAPTER_TYPE ?? 'moonraker') as 'moonraker' | 'bambu',
-  adapterUrl:        require('ADAPTER_URL'),
-  adapterApiKey:     process.env.ADAPTER_API_KEY ?? '',
-  adapterSerial:     process.env.ADAPTER_SERIAL ?? '',
-  pollingIntervalMs: (parseInt(process.env.POLLING_INTERVAL_S ?? '30') * 1000),
-};
+const CONFIG_DIR  = join(homedir(), '.flownt-bridge');
+const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
+
+export function configExists(): boolean {
+  return existsSync(CONFIG_FILE);
+}
+
+export function loadConfig(): BridgeConfig | null {
+  if (!configExists()) return null;
+  try {
+    return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) as BridgeConfig;
+  } catch {
+    return null;
+  }
+}
+
+export function saveConfig(cfg: BridgeConfig): void {
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+}
