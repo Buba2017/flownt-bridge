@@ -217,21 +217,21 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
         execFile('sips', ['-z', String(hPx), String(wPx), tmpFile],
           (err) => { if (err) reject(err); else resolve(); });
       });
-      // Debug-Kopie für Inspektion
-      await fs.copyFile(tmpFile, debugFile);
-      // Größe nach sips prüfen
-      const sipsInfo = await new Promise<string>((resolve) => {
-        execFile('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', tmpFile],
-          (_err, stdout) => resolve(stdout));
-      });
       // CUPS ersetzt Leerzeichen durch Unterstriche im Druckernamen
       const cupsName = printerName.replace(/ /g, '_');
-      console.log(`[dymo-bridge] lp: ${cupsName} sips→${sipsInfo.replace(/\s+/g,' ').trim()}`);
+      // Papierformat in PostScript-Punkten (1pt = 1/72 inch)
+      const wPts = Math.round((widthMm ?? 57) / 25.4 * 72);
+      const hPts = Math.round((heightMm ?? 32) / 25.4 * 72);
+      console.log(`[dymo-bridge] lp: ${cupsName} media=Custom.${wPts}x${hPts} ppi=300 (${wPx}x${hPx}px)`);
       await new Promise<void>((resolve, reject) => {
-        execFile('lp', ['-d', cupsName, '-o', 'fit-to-page', tmpFile],
-          (err) => { if (err) reject(err); else resolve(); });
+        execFile('lp', [
+          '-d', cupsName,
+          '-o', `media=Custom.${wPts}x${hPts}`,
+          '-o', 'ppi=300',
+          tmpFile,
+        ], (err) => { if (err) reject(err); else resolve(); });
       });
-      console.log(`[dymo-bridge] lp ✓ → debug: open ${debugFile}`);
+      console.log(`[dymo-bridge] lp ✓`);
       return res.json({ ok: true });
     } catch (e) {
       console.error(`[dymo-bridge] lp fehlgeschlagen:`, e);
