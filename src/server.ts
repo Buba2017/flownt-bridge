@@ -206,27 +206,31 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
       return res.json({ ok: false, error: 'Dymo REST API abgelehnt. Kein PNG-Fallback übermittelt.' });
     }
     const tmpFile = `/tmp/dymo_${randomUUID()}.png`;
-    const debugFile = `/tmp/dymo_debug_last.png`;
     try {
       await fs.writeFile(tmpFile, Buffer.from(pngBase64, 'base64'));
-      // DYMO CUPS-Treiber erwartet exakt 300 DPI — PNG auf Zielgröße skalieren
-      const DPI = 300;
-      const wPx = Math.round((widthMm ?? 57) / 25.4 * DPI);
-      const hPx = Math.round((heightMm ?? 32) / 25.4 * DPI);
+      // Exakte PPD-Papiergrößen des DYMO-Treibers (mm-Werte stimmen nicht exakt mit pt-Werten überein)
+      // Pixel werden aus den pt-Werten der PPD errechnet, nicht aus mm — verhindert Verzerrung.
+      const DYMO_PPD: Record<string, { name: string; wPts: number; hPts: number }> = {
+        '57x32': { name: 'w162h90', wPts: 162, hPts: 90 },
+        '54x25': { name: 'w154h64', wPts: 154, hPts: 64 },
+        '89x28': { name: 'w79h252', wPts: 79,  hPts: 252 },
+      };
+      const sizeKey = `${Math.round(widthMm ?? 57)}x${Math.round(heightMm ?? 32)}`;
+      const dymo = DYMO_PPD[sizeKey];
+      const mediaName = dymo ? dymo.name : `Custom.${Math.round((widthMm ?? 57) / 25.4 * 72)}x${Math.round((heightMm ?? 32) / 25.4 * 72)}`;
+      const wPx = dymo ? Math.round(dymo.wPts / 72 * 300) : Math.round((widthMm ?? 57) / 25.4 * 300);
+      const hPx = dymo ? Math.round(dymo.hPts / 72 * 300) : Math.round((heightMm ?? 32) / 25.4 * 300);
       await new Promise<void>((resolve, reject) => {
         execFile('sips', ['-z', String(hPx), String(wPx), tmpFile],
           (err) => { if (err) reject(err); else resolve(); });
       });
       // CUPS ersetzt Leerzeichen durch Unterstriche im Druckernamen
       const cupsName = printerName.replace(/ /g, '_');
-      // Papierformat in PostScript-Punkten (1pt = 1/72 inch)
-      const wPts = Math.round((widthMm ?? 57) / 25.4 * 72);
-      const hPts = Math.round((heightMm ?? 32) / 25.4 * 72);
-      console.log(`[dymo-bridge] lp: ${cupsName} media=Custom.${wPts}x${hPts} ppi=300 (${wPx}x${hPx}px)`);
+      console.log(`[dymo-bridge] lp: ${cupsName} media=${mediaName} ppi=300 (${wPx}x${hPx}px)`);
       await new Promise<void>((resolve, reject) => {
         execFile('lp', [
           '-d', cupsName,
-          '-o', `media=Custom.${wPts}x${hPts}`,
+          '-o', `media=${mediaName}`,
           '-o', 'ppi=300',
           tmpFile,
         ], (err) => { if (err) reject(err); else resolve(); });
