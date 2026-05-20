@@ -1,4 +1,9 @@
 import express from 'express';
+import https from 'https';
+import http from 'http';
+import { execFile } from 'child_process';
+import { promises as fs } from 'fs';
+import { randomUUID } from 'crypto';
 import { loadConfig, saveConfig, configExists, BridgeConfig, FLOWNT_EDGE_URL } from './config.js';
 import { PrinterSnapshot } from './adapters/types.js';
 
@@ -126,9 +131,108 @@ function statusPage() {
 <script>setTimeout(() => location.reload(), 15000);</script>`);
 }
 
+// Dymo Connect Proxy — ruft Dymo von localhost aus, umgeht die Origin-Beschränkung.
+// Reihenfolge: HTTP 41951 zuerst (Standard-Modus), dann HTTPS 41951, dann HTTP 41952.
+function callDymoConnect(body: string): Promise<string> {
+  const candidates: Array<{ mod: typeof https | typeof http; port: number; proto: string }> = [
+    { mod: http,  port: 41951, proto: 'http'  },
+    { mod: https, port: 41951, proto: 'https' },
+    { mod: http,  port: 41952, proto: 'http'  },
+  ];
+  const tryNext = (i: number): Promise<string> => {
+    if (i >= candidates.length) return Promise.reject(new Error('Dymo Connect nicht erreichbar'));
+    const { mod, port, proto } = candidates[i];
+    return new Promise<string>((resolve, reject) => {
+      const options = {
+        hostname: 'localhost', port,
+        path: '/DYMO/DLS/Printing/PrintLabel',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        rejectUnauthorized: false,
+      };
+      const req = mod.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => { console.log(`[dymo] ${proto}:${port} → "${data.trim()}"`); resolve(data); });
+      });
+      req.on('error', () => tryNext(i + 1).then(resolve, reject));
+      req.write(body);
+      req.end();
+    });
+  };
+  return tryNext(0);
+}
+
 export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
   const app = express();
   app.use(express.urlencoded({ extended: true }));
+  app.use(express.json({ limit: '10mb' }));
+
+  // Dymo-Proxy: CORS damit die Vercel-App http://localhost:7432 ansprechen kann
+  app.use('/dymo', (_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    next();
+  });
+  app.options('/dymo/print', (_req, res) => res.sendStatus(204));
+  app.post('/dymo/print', async (req, res) => {
+    const { printerName, labelXml, pngBase64, widthMm, heightMm } = req.body as {
+      printerName?: string; labelXml?: string;
+      pngBase64?: string; widthMm?: number; heightMm?: number;
+    };
+    if (!printerName || !labelXml) {
+      return res.status(400).json({ ok: false, error: 'printerName und labelXml erforderlich' });
+    }
+
+    // Versuch 1: Dymo Connect REST API
+    try {
+      const body = new URLSearchParams({
+        printerName, printParamsXml: '', labelXml,
+        labelSetXml: '<LabelSet><LabelSetRecord/></LabelSet>',
+      }).toString();
+      const result = await callDymoConnect(body);
+      const norm = result.trim().toLowerCase();
+      if (!norm || norm === 'true') return res.json({ ok: true });
+      if (norm.includes('error') || norm.includes('exception')) return res.json({ ok: false, error: `Dymo: ${result.slice(0, 200)}` });
+      // norm === 'false' → weiter zu Fallback
+    } catch { /* weiter zu Fallback */ }
+
+    // Versuch 2: macOS lp-Befehl (CUPS-Treiber, kein Dymo Connect)
+    if (!pngBase64) {
+      return res.json({ ok: false, error: 'Dymo REST API abgelehnt. Kein PNG-Fallback übermittelt.' });
+    }
+    const tmpFile = `/tmp/dymo_${randomUUID()}.png`;
+    try {
+      await fs.writeFile(tmpFile, Buffer.from(pngBase64, 'base64'));
+      const wPts = Math.round((widthMm ?? 57) / 25.4 * 72);
+      const hPts = Math.round((heightMm ?? 32) / 25.4 * 72);
+      // CUPS ersetzt Leerzeichen durch Unterstriche im Druckernamen
+      const cupsName = printerName.replace(/ /g, '_');
+      console.log(`[dymo-bridge] lp: ${cupsName} PageSize=Custom.${wPts}x${hPts}`);
+      const lpError = await new Promise<Error | null>((resolve) => {
+        execFile('lp', ['-d', cupsName, '-o', `PageSize=Custom.${wPts}x${hPts}`, '-o', 'fit-to-page', tmpFile],
+          (err) => resolve(err ?? null));
+      });
+      if (lpError) {
+        console.log(`[dymo-bridge] lp Versuch 1 fehlgeschlagen: ${lpError.message} → Versuch 2 ohne PageSize`);
+        await new Promise<void>((resolve, reject) => {
+          execFile('lp', ['-d', cupsName, '-o', 'fit-to-page', tmpFile],
+            (err) => { if (err) reject(err); else resolve(); });
+        });
+      }
+      console.log(`[dymo-bridge] lp ✓`);
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error(`[dymo-bridge] lp fehlgeschlagen:`, e);
+      return res.status(500).json({ ok: false, error: `lp: ${String(e)}` });
+    } finally {
+      fs.unlink(tmpFile).catch(() => {});
+    }
+  });
 
   app.get('/', (_req, res) => {
     res.send(configExists() ? statusPage() : setupPage());
