@@ -176,10 +176,31 @@ Nein – Bridge und Drucker müssen im gleichen Netzwerk sein.
 
 ---
 
+## Dymo-Etikettendruck (automatisch, kein Setup nötig)
+
+Die Bridge ermöglicht direkten Etikettendruck vom Browser aus, ohne Dymo Connect-Einschränkungen.
+
+**Wie es funktioniert:**
+1. Flownt (fila-track.vercel.app) sendet den Druckauftrag an `http://localhost:7432/dymo/print`
+2. Die Bridge versucht zuerst die Dymo Connect REST API (Port 41951)
+3. Falls das fehlschlägt: automatischer Fallback über den macOS-Druckertreiber (CUPS)
+
+**Voraussetzungen für den CUPS-Fallback:**
+- Dymo LabelWriter in macOS unter Systemeinstellungen → Drucker eingerichtet
+- Dymo Connect muss laufen (wird für die Drucker-Erkennung benötigt)
+
+**Falls der Drucker nach einem Fehler offline ist:**
+1. Systemeinstellungen → Drucker & Scanner öffnen
+2. DYMO LabelWriter auswählen → Druckerwarteschlange öffnen
+3. Hängende Aufträge löschen → Drucker reaktivieren
+
+---
+
 ## Architektur (für Interessierte)
 
 ```
 Drucker (LAN)  ←MQTT/REST→  Flownt Bridge (lokal)  ←HTTPS→  Flownt Cloud
+Browser        ←HTTP→       Flownt Bridge (Port 7432) → CUPS → Drucker
 ```
 
 Die Bridge stellt selbst alle Verbindungen her. Es müssen keine Ports am Router geöffnet werden.
