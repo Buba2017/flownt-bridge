@@ -206,6 +206,7 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
       return res.json({ ok: false, error: 'Dymo REST API abgelehnt. Kein PNG-Fallback übermittelt.' });
     }
     const tmpFile = `/tmp/dymo_${randomUUID()}.png`;
+    const debugFile = `/tmp/dymo_debug_last.png`;
     try {
       await fs.writeFile(tmpFile, Buffer.from(pngBase64, 'base64'));
       // DYMO CUPS-Treiber erwartet exakt 300 DPI — PNG auf Zielgröße skalieren
@@ -216,14 +217,21 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
         execFile('sips', ['-z', String(hPx), String(wPx), tmpFile],
           (err) => { if (err) reject(err); else resolve(); });
       });
+      // Debug-Kopie für Inspektion
+      await fs.copyFile(tmpFile, debugFile);
+      // Größe nach sips prüfen
+      const sipsInfo = await new Promise<string>((resolve) => {
+        execFile('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', tmpFile],
+          (_err, stdout) => resolve(stdout));
+      });
       // CUPS ersetzt Leerzeichen durch Unterstriche im Druckernamen
       const cupsName = printerName.replace(/ /g, '_');
-      console.log(`[dymo-bridge] lp: ${cupsName} ${wPx}x${hPx}px (300dpi)`);
+      console.log(`[dymo-bridge] lp: ${cupsName} sips→${sipsInfo.replace(/\s+/g,' ').trim()}`);
       await new Promise<void>((resolve, reject) => {
         execFile('lp', ['-d', cupsName, '-o', 'fit-to-page', tmpFile],
           (err) => { if (err) reject(err); else resolve(); });
       });
-      console.log(`[dymo-bridge] lp ✓`);
+      console.log(`[dymo-bridge] lp ✓ → debug: open ${debugFile}`);
       return res.json({ ok: true });
     } catch (e) {
       console.error(`[dymo-bridge] lp fehlgeschlagen:`, e);
