@@ -208,22 +208,21 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
     const tmpFile = `/tmp/dymo_${randomUUID()}.png`;
     try {
       await fs.writeFile(tmpFile, Buffer.from(pngBase64, 'base64'));
-      const wPts = Math.round((widthMm ?? 57) / 25.4 * 72);
-      const hPts = Math.round((heightMm ?? 32) / 25.4 * 72);
+      // DYMO CUPS-Treiber erwartet exakt 300 DPI — PNG auf Zielgröße skalieren
+      const DPI = 300;
+      const wPx = Math.round((widthMm ?? 57) / 25.4 * DPI);
+      const hPx = Math.round((heightMm ?? 32) / 25.4 * DPI);
+      await new Promise<void>((resolve, reject) => {
+        execFile('sips', ['-z', String(hPx), String(wPx), tmpFile],
+          (err) => { if (err) reject(err); else resolve(); });
+      });
       // CUPS ersetzt Leerzeichen durch Unterstriche im Druckernamen
       const cupsName = printerName.replace(/ /g, '_');
-      console.log(`[dymo-bridge] lp: ${cupsName} PageSize=Custom.${wPts}x${hPts}`);
-      const lpError = await new Promise<Error | null>((resolve) => {
-        execFile('lp', ['-d', cupsName, '-o', `PageSize=Custom.${wPts}x${hPts}`, '-o', 'fit-to-page', tmpFile],
-          (err) => resolve(err ?? null));
+      console.log(`[dymo-bridge] lp: ${cupsName} ${wPx}x${hPx}px (300dpi)`);
+      await new Promise<void>((resolve, reject) => {
+        execFile('lp', ['-d', cupsName, '-o', 'fit-to-page', tmpFile],
+          (err) => { if (err) reject(err); else resolve(); });
       });
-      if (lpError) {
-        console.log(`[dymo-bridge] lp Versuch 1 fehlgeschlagen: ${lpError.message} → Versuch 2 ohne PageSize`);
-        await new Promise<void>((resolve, reject) => {
-          execFile('lp', ['-d', cupsName, '-o', 'fit-to-page', tmpFile],
-            (err) => { if (err) reject(err); else resolve(); });
-        });
-      }
       console.log(`[dymo-bridge] lp ✓`);
       return res.json({ ok: true });
     } catch (e) {
