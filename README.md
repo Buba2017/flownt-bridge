@@ -13,77 +13,53 @@ Verbindet deinen 3D-Drucker automatisch mit Flownt. Du siehst dann in Flownt liv
 
 ---
 
-## Schritt 1 – Node.js installieren
+## Installation
 
-Node.js ist das Programm, das die Bridge ausführt. Du brauchst es nur einmal installieren.
+### Option A – Standalone-Binary (empfohlen, kein Node.js nötig)
 
-1. Öffne [nodejs.org](https://nodejs.org)
-2. Klicke auf den großen **„LTS"**-Button (die empfohlene Version)
-3. Lade die Datei herunter und installiere sie wie jede andere App
-4. Nach der Installation kannst du direkt weitermachen
+1. Lade die passende Datei für dein System von den [Releases](https://github.com/Buba2017/flownt-bridge/releases) herunter:
 
-> **Mac-Nutzer:** Wenn du gefragt wirst, ob du das Paket öffnen möchtest obwohl es aus dem Internet stammt – auf „Öffnen" klicken.
+   | System | Datei |
+   |---|---|
+   | Mac (Apple Silicon / M1–M4) | `flownt-bridge-macos-arm64` |
+   | Mac (Intel) | `flownt-bridge-macos-x64` |
+   | Windows | `flownt-bridge-win-x64.exe` |
+   | Raspberry Pi (64-bit) | `flownt-bridge-linux-arm64` |
+
+2. **Mac:** Datei einmalig ausführbar machen:
+   ```bash
+   chmod +x flownt-bridge-macos-arm64
+   ```
+   Dann Doppelklick — falls macOS warnt: **Systemeinstellungen → Datenschutz & Sicherheit → „Trotzdem öffnen"**
+
+3. **Windows:** Doppelklick auf `.exe` — bei SmartScreen-Warnung auf **„Weitere Informationen" → „Trotzdem ausführen"**
+
+4. **Raspberry Pi:**
+   ```bash
+   chmod +x flownt-bridge-linux-arm64
+   ./flownt-bridge-linux-arm64
+   ```
+
+Der Browser öffnet sich automatisch mit dem Einrichtungsassistenten.
 
 ---
 
-## Schritt 2 – Bridge herunterladen
+### Option B – Mit Node.js (für Entwickler / ältere Systeme)
 
-1. Öffne diese Seite: [github.com/Buba2017/flownt-bridge](https://github.com/Buba2017/flownt-bridge)
-2. Klicke auf den grünen Button **„Code"**
-3. Wähle **„Download ZIP"**
-4. Entpacke die ZIP-Datei (Doppelklick auf die Datei)
-5. Schiebe den entpackten Ordner `flownt-bridge-main` an einen festen Platz, z.B. in deinen Dokumente-Ordner
-
----
-
-## Schritt 3 – Bridge einrichten (einmalig)
-
-### Mac
-
-1. Öffne den Ordner `flownt-bridge-main`
-2. Mache einen **Rechtsklick** auf eine leere Stelle im Ordner
-3. Wähle **„Neues Terminal-Fenster im Ordner"** (oder auf neueren Macs: **„Terminal hier öffnen"**)
-4. Tippe ins Terminal:
-   ```
-   npm install
-   ```
-   Drücke Enter und warte bis es fertig ist (dauert 1–2 Minuten)
-
-### Windows
-
-1. Öffne den Ordner `flownt-bridge-main`
-2. Klicke in die Adressleiste des Explorer-Fensters (oben, wo der Pfad steht)
-3. Tippe `cmd` und drücke Enter – ein schwarzes Fenster öffnet sich
-4. Tippe:
-   ```
-   npm install
-   ```
-   Drücke Enter und warte bis es fertig ist (dauert 1–2 Minuten)
-
-### Raspberry Pi
+**Voraussetzung:** [Node.js 18+](https://nodejs.org) installiert
 
 ```bash
-cd flownt-bridge-main
+git clone https://github.com/Buba2017/flownt-bridge.git
+cd flownt-bridge
 npm install
-```
-
----
-
-## Schritt 4 – Bridge starten
-
-Tippe ins Terminal (im Ordner `flownt-bridge-main`):
-
-```
 npm start
 ```
 
-Der Browser öffnet sich automatisch und zeigt dir einen Einrichtungsassistenten.
-
 ---
 
-## Schritt 5 – Einrichten im Browser
+## Einrichtung im Browser
 
-Du siehst jetzt eine Seite mit dem Titel **„Einrichtung"**. Fülle folgende Felder aus:
+Nach dem Start öffnet sich automatisch `http://localhost:7432` mit dem Einrichtungsassistenten.
 
 ### Flownt Auth-Token
 
@@ -96,15 +72,13 @@ Du siehst jetzt eine Seite mit dem Titel **„Einrichtung"**. Fülle folgende Fe
 
 ### Bambu Lab Drucker
 
-Du brauchst drei Angaben, die alle am **Drucker-Display** zu finden sind:
+Du brauchst drei Angaben — alle am **Drucker-Display** unter **Einstellungen → Netzwerk**:
 
-**Einstellungen → Netzwerk** (auf dem Display des Druckers)
-
-| Was | Wo am Display | Beispiel |
-|---|---|---|
-| IP-Adresse | Netzwerk → IP-Adresse | `192.168.1.100` |
-| Seriennummer | Netzwerk → Seriennummer | `00M09A123456789` |
-| Access Code | Netzwerk → Access Code | `dc00ce26` |
+| Was | Beispiel |
+|---|---|
+| IP-Adresse | `192.168.1.100` |
+| Seriennummer | `00M09A123456789` |
+| Access Code | `dc00ce26` |
 
 > Der Drucker muss **nicht** im LAN-only-Modus betrieben werden. Er kann normal mit der Bambu App verbunden bleiben.
 
@@ -117,11 +91,11 @@ Du brauchst drei Angaben, die alle am **Drucker-Display** zu finden sind:
 
 ---
 
-## Schritt 6 – Fertig
+## Fertig
 
 Klicke auf **„Speichern & Verbinden"**.
 
-Die Seite wechselt zur Status-Ansicht. Du siehst:
+Die Seite wechselt zur Status-Ansicht:
 - **Bereit** (grüner Punkt) = Drucker ist verbunden
 - In Flownt erscheint auf der Druckerkarte ein grüner **„Bridge"**-Punkt
 
@@ -129,12 +103,15 @@ Die Seite wechselt zur Status-Ansicht. Du siehst:
 
 ## Bridge dauerhaft laufen lassen (optional)
 
-Standardmäßig läuft die Bridge nur, solange das Terminal-Fenster offen ist. Damit sie immer automatisch startet:
+Standardmäßig läuft die Bridge nur, solange das Fenster offen ist.
 
-### Mac / Linux / Raspberry Pi
+### Mac / Linux / Raspberry Pi (pm2)
 
 ```bash
 npm install -g pm2
+# Binary:
+pm2 start ./flownt-bridge-macos-arm64 --name flownt-bridge
+# oder npm:
 pm2 start "npm start" --name flownt-bridge
 pm2 save
 pm2 startup
@@ -142,17 +119,10 @@ pm2 startup
 
 Den letzten ausgegebenen Befehl (beginnt mit `sudo`) noch einmal einfügen und Enter drücken.
 
-Ab sofort startet die Bridge automatisch beim Hochfahren.
-
-### Status prüfen
+### Status prüfen / stoppen
 
 ```bash
 pm2 status
-```
-
-### Bridge stoppen
-
-```bash
 pm2 stop flownt-bridge
 ```
 
@@ -162,11 +132,11 @@ pm2 stop flownt-bridge
 
 **Die Bridge zeigt „Verbindungsfehler" an.**
 - Prüfe ob der Drucker eingeschaltet und im gleichen WLAN ist wie der Computer mit der Bridge
-- Prüfe ob IP-Adresse, Seriennummer und Access Code korrekt eingetragen sind
+- Prüfe ob IP-Adresse, Seriennummer und Access Code korrekt sind
 - Öffne http://localhost:7432/setup und trage die Daten neu ein
 
 **Wo finde ich die Status-Seite der Bridge?**
-Solange die Bridge läuft, erreichst du sie unter: **http://localhost:7432**
+Solange die Bridge läuft: **http://localhost:7432**
 
 **Ich habe einen neuen Token in Flownt generiert. Was jetzt?**
 Öffne http://localhost:7432/setup, trage den neuen Token ein und speichere.
@@ -176,16 +146,16 @@ Nein – Bridge und Drucker müssen im gleichen Netzwerk sein.
 
 ---
 
-## Dymo-Etikettendruck (automatisch, kein Setup nötig)
+## Dymo-Etikettendruck
 
-Die Bridge ermöglicht direkten Etikettendruck vom Browser aus, ohne Dymo Connect-Einschränkungen.
+Die Bridge ermöglicht direkten Etikettendruck vom Browser aus.
 
 **Wie es funktioniert:**
-1. Flownt (fila-track.vercel.app) sendet den Druckauftrag an `http://localhost:7432/dymo/print`
+1. Flownt sendet den Druckauftrag an `http://localhost:7432/dymo/print`
 2. Die Bridge versucht zuerst die Dymo Connect REST API (Port 41951)
 3. Falls das fehlschlägt: automatischer Fallback über den macOS-Druckertreiber (CUPS)
 
-**Voraussetzungen für den CUPS-Fallback:**
+**Voraussetzungen für CUPS-Fallback:**
 - Dymo LabelWriter in macOS unter Systemeinstellungen → Drucker eingerichtet
 - Dymo Connect muss laufen (wird für die Drucker-Erkennung benötigt)
 
@@ -196,7 +166,7 @@ Die Bridge ermöglicht direkten Etikettendruck vom Browser aus, ohne Dymo Connec
 
 ---
 
-## Architektur (für Interessierte)
+## Architektur
 
 ```
 Drucker (LAN)  ←MQTT/REST→  Flownt Bridge (lokal)  ←HTTPS→  Flownt Cloud
@@ -204,3 +174,15 @@ Browser        ←HTTP→       Flownt Bridge (Port 7432) → CUPS → Drucker
 ```
 
 Die Bridge stellt selbst alle Verbindungen her. Es müssen keine Ports am Router geöffnet werden.
+
+---
+
+## Für Entwickler – Binary selbst bauen
+
+```bash
+npm install
+npm run package        # alle Plattformen
+npm run package:mac    # nur macOS arm64 (schneller)
+```
+
+Binaries landen in `dist/`.
