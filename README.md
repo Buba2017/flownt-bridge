@@ -1,55 +1,53 @@
-# Flownt Bridge – Installationsanleitung
+# Flownt Bridge
 
-Verbindet deinen 3D-Drucker automatisch mit Flownt. Du siehst dann in Flownt live, was dein Drucker gerade macht.
+Connects your 3D printer to Flownt in real time — live status, temperatures, progress, and automatic print log entries.
 
-## Unterstützte Drucker
+## Supported Printers
 
-| Drucker | Status |
+| Printer | Status |
 |---|---|
 | Bambu Lab (X1, P1, A1, …) | ✅ |
 | Klipper / Moonraker | ✅ |
-| Prusa Connect | 🔜 Bald |
-| OctoPrint | 🔜 Bald |
+| Prusa Connect | 🔜 Coming soon |
+| OctoPrint | 🔜 Coming soon |
 
 ---
 
 ## Installation
 
-### Option A – Standalone-Binary (empfohlen, kein Node.js nötig)
+### Option A – Standalone Binary (recommended, no Node.js required)
 
-1. Lade die passende Datei für dein System von den [Releases](https://github.com/Buba2017/flownt-bridge/releases) herunter:
+Download the file for your system from [Releases](https://github.com/Buba2017/flownt-bridge/releases/latest):
 
-   | System | Datei |
-   |---|---|
-   | Mac (Apple Silicon / M1–M4) | `flownt-bridge-macos-arm64` |
-   | Mac (Intel) | `flownt-bridge-macos-x64` |
-   | Windows | `flownt-bridge-win-x64.exe` |
-   | Raspberry Pi (64-bit) | `flownt-bridge-linux-arm64` |
+| System | File |
+|---|---|
+| Mac (Apple Silicon / M1–M4) | `flownt-bridge-macos-arm64` |
+| Mac (Intel) | `flownt-bridge-macos-x64` |
+| Windows | `flownt-bridge-win-x64.exe` |
+| Raspberry Pi (64-bit) | `flownt-bridge-linux-arm64` |
 
-2. **Mac:** Datei einmalig freigeben (Terminal im Download-Ordner):
-   ```bash
-   chmod +x flownt-bridge-macos-arm64
-   xattr -dr com.apple.quarantine flownt-bridge-macos-arm64
-   ```
-   Danach Doppelklick — die Binary startet ohne Sicherheitswarnung.
+**Mac** — make the file executable (run once in Terminal):
+```bash
+chmod +x flownt-bridge-macos-arm64
+xattr -dr com.apple.quarantine flownt-bridge-macos-arm64
+```
+Then double-click — the binary starts without any security warning.
 
-   > **Warum?** macOS blockiert aus dem Internet heruntergeladene Dateien ohne Apple-Signatur. Der `xattr`-Befehl entfernt dieses Quarantäne-Flag einmalig.
+> **Why?** macOS blocks files downloaded from the internet that are not signed by Apple. The `xattr` command removes this quarantine flag once.
 
-3. **Windows:** Doppelklick auf `.exe` — bei SmartScreen-Warnung auf **„Weitere Informationen" → „Trotzdem ausführen"**
+**Windows** — double-click the `.exe`. If SmartScreen warns you: click **"More info" → "Run anyway"**.
 
-4. **Raspberry Pi:**
-   ```bash
-   chmod +x flownt-bridge-linux-arm64
-   ./flownt-bridge-linux-arm64
-   ```
+**Raspberry Pi:**
+```bash
+chmod +x flownt-bridge-linux-arm64
+./flownt-bridge-linux-arm64
+```
 
-Der Browser öffnet sich automatisch mit dem Einrichtungsassistenten.
+The browser opens automatically with the setup wizard.
 
 ---
 
-### Option B – Mit Node.js (für Entwickler / ältere Systeme)
-
-**Voraussetzung:** [Node.js 18+](https://nodejs.org) installiert
+### Option B – Via Terminal / Command Prompt (Node.js 18+ required)
 
 ```bash
 git clone https://github.com/Buba2017/flownt-bridge.git
@@ -60,132 +58,119 @@ npm start
 
 ---
 
-## Einrichtung im Browser
+## Setup
 
-Nach dem Start öffnet sich automatisch `http://localhost:7432` mit dem Einrichtungsassistenten.
+After starting, the browser opens `http://localhost:7432` automatically.
 
-### Flownt Auth-Token
+### Flownt Auth Token
 
-1. Öffne Flownt in einem anderen Browser-Tab
-2. Gehe zu **Drucker & Geräte**
-3. Klicke auf deinen Drucker → **Bearbeiten**
-4. Scrolle bis zum Abschnitt **„Bridge-Verbindung"**
-5. Klicke auf **„Kopieren"** neben dem Token
-6. Füge den Token in das Feld ein (Cmd+V auf Mac, Strg+V auf Windows)
+1. Open Flownt in another browser tab
+2. Go to **Printers & Devices**
+3. Click your printer → **Edit**
+4. Scroll to **"Bridge Connection"**
+5. Click **"Copy"** next to the token
+6. Paste it into the token field
 
-### Bambu Lab Drucker
+### Bambu Lab
 
-Du brauchst drei Angaben — alle am **Drucker-Display** unter **Einstellungen → Netzwerk**:
+Find all three values on the printer display under **Settings → Network**:
 
-| Was | Beispiel |
+| Field | Example |
 |---|---|
-| IP-Adresse | `192.168.1.100` |
-| Seriennummer | `00M09A123456789` |
+| IP Address | `192.168.1.100` |
+| Serial Number | `00M09A123456789` |
 | Access Code | `dc00ce26` |
 
-> Der Drucker muss **nicht** im LAN-only-Modus betrieben werden. Er kann normal mit der Bambu App verbunden bleiben.
+> The printer does **not** need to be in LAN-only mode. It can stay connected to the Bambu app.
 
 ### Moonraker / Klipper
 
-| Was | Beschreibung | Beispiel |
+| Field | Description | Example |
 |---|---|---|
-| Drucker-URL | IP-Adresse deines Raspberry Pi | `http://192.168.1.100` |
-| API Key | Nur ausfüllen wenn in Moonraker konfiguriert (meist leer lassen) | |
+| Printer URL | IP address of your Raspberry Pi | `http://192.168.1.100` |
+| API Key | Only if configured in Moonraker (usually leave empty) | |
+
+Click **"Save & Connect"**. The page switches to the status view — a green dot means the printer is connected.
 
 ---
 
-## Fertig
+## Keep the Bridge running (optional)
 
-Klicke auf **„Speichern & Verbinden"**.
-
-Die Seite wechselt zur Status-Ansicht:
-- **Bereit** (grüner Punkt) = Drucker ist verbunden
-- In Flownt erscheint auf der Druckerkarte ein grüner **„Bridge"**-Punkt
-
----
-
-## Bridge dauerhaft laufen lassen (optional)
-
-Standardmäßig läuft die Bridge nur, solange das Fenster offen ist.
-
-### Mac / Linux / Raspberry Pi (pm2)
+By default the bridge only runs while the window is open.
 
 ```bash
 npm install -g pm2
 # Binary:
 pm2 start ./flownt-bridge-macos-arm64 --name flownt-bridge
-# oder npm:
+# or npm:
 pm2 start "npm start" --name flownt-bridge
 pm2 save
 pm2 startup
 ```
 
-Den letzten ausgegebenen Befehl (beginnt mit `sudo`) noch einmal einfügen und Enter drücken.
-
-### Status prüfen / stoppen
+Run the last printed command (starts with `sudo`) to enable autostart on boot.
 
 ```bash
-pm2 status
+pm2 status          # check status
 pm2 stop flownt-bridge
 ```
 
 ---
 
-## Häufige Fragen
+## FAQ
 
-**Die Bridge zeigt „Verbindungsfehler" an.**
-- Prüfe ob der Drucker eingeschaltet und im gleichen WLAN ist wie der Computer mit der Bridge
-- Prüfe ob IP-Adresse, Seriennummer und Access Code korrekt sind
-- Öffne http://localhost:7432/setup und trage die Daten neu ein
+**The bridge shows a connection error.**
+- Make sure the printer is on and in the same network as the computer running the bridge
+- Check IP address, serial number and access code
+- Open http://localhost:7432/setup and re-enter the credentials
 
-**Wo finde ich die Status-Seite der Bridge?**
-Solange die Bridge läuft: **http://localhost:7432**
+**Where is the bridge status page?**
+While the bridge is running: **http://localhost:7432**
 
-**Ich habe einen neuen Token in Flownt generiert. Was jetzt?**
-Öffne http://localhost:7432/setup, trage den neuen Token ein und speichere.
+**I generated a new token in Flownt. What now?**
+Open http://localhost:7432/setup, enter the new token and save.
 
-**Funktioniert das auch, wenn der Drucker in einem anderen WLAN ist?**
-Nein – Bridge und Drucker müssen im gleichen Netzwerk sein.
-
----
-
-## Dymo-Etikettendruck
-
-Die Bridge ermöglicht direkten Etikettendruck vom Browser aus.
-
-**Wie es funktioniert:**
-1. Flownt sendet den Druckauftrag an `http://localhost:7432/dymo/print`
-2. Die Bridge versucht zuerst die Dymo Connect REST API (Port 41951)
-3. Falls das fehlschlägt: automatischer Fallback über den macOS-Druckertreiber (CUPS)
-
-**Voraussetzungen für CUPS-Fallback:**
-- Dymo LabelWriter in macOS unter Systemeinstellungen → Drucker eingerichtet
-- Dymo Connect muss laufen (wird für die Drucker-Erkennung benötigt)
-
-**Falls der Drucker nach einem Fehler offline ist:**
-1. Systemeinstellungen → Drucker & Scanner öffnen
-2. DYMO LabelWriter auswählen → Druckerwarteschlange öffnen
-3. Hängende Aufträge löschen → Drucker reaktivieren
+**Does it work if the printer is on a different network?**
+No — the bridge and printer must be on the same local network.
 
 ---
 
-## Architektur
+## Dymo Label Printing
+
+The bridge enables direct label printing from the browser, bypassing Dymo Connect CORS restrictions.
+
+1. Flownt sends the print job to `http://localhost:7432/dymo/print`
+2. The bridge tries the Dymo Connect REST API first (port 41951)
+3. If that fails: automatic fallback via the macOS CUPS driver
+
+**Requirements for CUPS fallback:**
+- Dymo LabelWriter set up in macOS System Settings → Printers
+- Dymo Connect must be running (needed for printer name detection)
+
+**If the printer goes offline after an error:**
+1. Open System Settings → Printers & Scanners
+2. Select DYMO LabelWriter → Open print queue
+3. Delete stuck jobs → reactivate printer
+
+---
+
+## Architecture
 
 ```
-Drucker (LAN)  ←MQTT/REST→  Flownt Bridge (lokal)  ←HTTPS→  Flownt Cloud
-Browser        ←HTTP→       Flownt Bridge (Port 7432) → CUPS → Drucker
+Printer (LAN)  ←MQTT/REST→  Flownt Bridge (local)  ←HTTPS→  Flownt Cloud
+Browser        ←HTTP→       Flownt Bridge (port 7432) → CUPS → Printer
 ```
 
-Die Bridge stellt selbst alle Verbindungen her. Es müssen keine Ports am Router geöffnet werden.
+The bridge initiates all connections outbound. No ports need to be opened on your router.
 
 ---
 
-## Für Entwickler – Binary selbst bauen
+## For developers – build the binary yourself
 
 ```bash
 npm install
-npm run package        # alle Plattformen
-npm run package:mac    # nur macOS arm64 (schneller)
+npm run package        # all platforms
+npm run package:mac    # macOS arm64 only (faster)
 ```
 
-Binaries landen in `dist/`.
+Binaries are written to `dist/`.

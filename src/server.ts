@@ -19,7 +19,7 @@ export const bridgeState = {
 
 function html(title: string, body: string) {
   return `<!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -57,41 +57,41 @@ ${body}
 function setupPage(error?: string) {
   const cfg = loadConfig();
   const isBambu = !cfg || cfg.adapterType === 'bambu';
-  return html('Einrichtung', `
+  return html('Setup', `
 <div class="card">
-  <h1>Einrichtung</h1>
-  <p>Verbinde deinen Drucker mit Flownt. Du brauchst dafür nur die Zugangsdaten aus Flownt und deinem Drucker.</p>
+  <h1>Setup</h1>
+  <p>Connect your printer to Flownt. You only need the credentials from Flownt and your printer.</p>
   ${error ? `<p style="color:#ef4444;background:#ef444420;padding:0.75rem;border-radius:8px;margin-bottom:1rem;">${error}</p>` : ''}
   <form method="POST" action="/setup">
 
-    <label>Flownt Auth-Token</label>
-    <input name="token" type="password" placeholder="Aus Flownt kopieren (Drucker → Bearbeiten → Bridge)" value="${cfg?.flowntAuthToken ?? ''}" required/>
-    <p class="hint">Öffne Flownt → Drucker bearbeiten → Bridge-Verbindung → Token kopieren</p>
+    <label>Flownt Auth Token</label>
+    <input name="token" type="password" placeholder="Copy from Flownt (Printer → Edit → Bridge)" value="${cfg?.flowntAuthToken ?? ''}" required/>
+    <p class="hint">Open Flownt → Edit printer → Bridge Connection → Copy token</p>
 
-    <label>Drucker-Typ</label>
+    <label>Printer Type</label>
     <select name="adapterType" id="adapterTypeSelect" onchange="switchAdapter(this.value)">
       <option value="bambu" ${isBambu ? 'selected' : ''}>Bambu Lab (X1, P1, A1, …)</option>
       <option value="moonraker" ${!isBambu ? 'selected' : ''}>Moonraker / Klipper</option>
     </select>
 
     <div id="adapter-bambu">
-      <label>IP-Adresse des Druckers</label>
+      <label>Printer IP Address</label>
       <input name="bambuUrl" placeholder="192.168.1.100" value="${cfg?.adapterType === 'bambu' ? cfg.adapterUrl : ''}"/>
-      <label>Seriennummer</label>
+      <label>Serial Number</label>
       <input name="bambuSerial" placeholder="00M09A123456789" value="${cfg?.adapterType === 'bambu' ? cfg.adapterSerial : ''}"/>
       <label>Access Code</label>
-      <input name="bambuCode" type="password" placeholder="8-stelliger Code vom Display" value="${cfg?.adapterType === 'bambu' ? cfg.adapterApiKey : ''}"/>
-      <p class="hint">Alle drei Werte findest du am Drucker-Display unter Einstellungen → Netzwerk.</p>
+      <input name="bambuCode" type="password" placeholder="8-digit code from the display" value="${cfg?.adapterType === 'bambu' ? cfg.adapterApiKey : ''}"/>
+      <p class="hint">Find all three values on the printer display under Settings → Network.</p>
     </div>
 
     <div id="adapter-moonraker">
-      <label>Drucker-URL</label>
+      <label>Printer URL</label>
       <input name="moonrakerUrl" placeholder="http://192.168.1.100" value="${cfg?.adapterType === 'moonraker' ? cfg.adapterUrl : ''}"/>
       <label>API Key (optional)</label>
-      <input name="moonrakerKey" type="password" placeholder="Leer lassen wenn nicht gesetzt" value="${cfg?.adapterType === 'moonraker' ? cfg.adapterApiKey : ''}"/>
+      <input name="moonrakerKey" type="password" placeholder="Leave empty if not set" value="${cfg?.adapterType === 'moonraker' ? cfg.adapterApiKey : ''}"/>
     </div>
 
-    <button class="btn" type="submit">Speichern &amp; Verbinden</button>
+    <button class="btn" type="submit">Save &amp; Connect</button>
   </form>
 </div>
 <script>
@@ -107,8 +107,8 @@ function statusPage() {
   const cfg = loadConfig();
   const s = bridgeState.snapshot;
   const statusColor = s?.status === 'printing' ? 'green' : s?.status === 'error' ? 'red' : s?.status === 'idle' ? 'green' : 'gray';
-  const statusLabel = s?.status === 'printing' ? 'Im Druck' : s?.status === 'error' ? 'Fehler' : s?.status === 'idle' ? 'Bereit' : 'Offline';
-  const lastPush = bridgeState.lastPushAt ? bridgeState.lastPushAt.toLocaleTimeString('de-DE') : '–';
+  const statusLabel = s?.status === 'printing' ? 'Printing' : s?.status === 'error' ? 'Error' : s?.status === 'idle' ? 'Ready' : 'Offline';
+  const lastPush = bridgeState.lastPushAt ? bridgeState.lastPushAt.toLocaleTimeString('en-US') : '–';
   const adapterLabel = cfg?.adapterType === 'bambu' ? 'Bambu Lab' : 'Moonraker';
   return html('Status', `
 <div class="card">
@@ -117,16 +117,16 @@ function statusPage() {
     <span class="badge">${adapterLabel}</span>
   </div>
   <div style="background:#111;border-radius:12px;padding:1.25rem;margin-bottom:1.5rem;">
-    <div style="font-size:0.75rem;color:#555;margin-bottom:0.5rem;">DRUCKER-STATUS</div>
+    <div style="font-size:0.75rem;color:#555;margin-bottom:0.5rem;">PRINTER STATUS</div>
     <div style="font-size:1.5rem;font-weight:700;display:flex;align-items:center;">
       <span class="status-dot ${statusColor}"></span>${statusLabel}
     </div>
     ${s?.printFile ? `<div style="color:#888;font-size:0.8rem;margin-top:0.5rem;">📄 ${s.printFile}${s.progressPct != null ? ` · ${s.progressPct}%` : ''}</div>` : ''}
-    ${s?.tempHotend != null ? `<div style="color:#888;font-size:0.8rem;margin-top:0.25rem;">🌡 Düse ${s.tempHotend}°C${s.tempBed != null ? ` · Bett ${s.tempBed}°C` : ''}</div>` : ''}
+    ${s?.tempHotend != null ? `<div style="color:#888;font-size:0.8rem;margin-top:0.25rem;">🌡 Nozzle ${s.tempHotend}°C${s.tempBed != null ? ` · Bed ${s.tempBed}°C` : ''}</div>` : ''}
   </div>
-  <div style="font-size:0.8rem;color:#555;">Letztes Update: ${lastPush}</div>
+  <div style="font-size:0.8rem;color:#555;">Last update: ${lastPush}</div>
   ${bridgeState.error ? `<div style="color:#ef4444;margin-top:0.75rem;font-size:0.8rem;">⚠ ${bridgeState.error}</div>` : ''}
-  <a href="/setup"><button class="btn btn-ghost" style="margin-top:1.5rem;">Einstellungen ändern</button></a>
+  <a href="/setup"><button class="btn btn-ghost" style="margin-top:1.5rem;">Change settings</button></a>
 </div>
 <script>setTimeout(() => location.reload(), 15000);</script>`);
 }
@@ -185,7 +185,7 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
       pngBase64?: string; widthMm?: number; heightMm?: number;
     };
     if (!printerName || !labelXml) {
-      return res.status(400).json({ ok: false, error: 'printerName und labelXml erforderlich' });
+      return res.status(400).json({ ok: false, error: 'printerName and labelXml are required' });
     }
 
     // Versuch 1: Dymo Connect REST API
@@ -199,11 +199,11 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
       if (!norm || norm === 'true') return res.json({ ok: true });
       if (norm.includes('error') || norm.includes('exception')) return res.json({ ok: false, error: `Dymo: ${result.slice(0, 200)}` });
       // norm === 'false' → weiter zu Fallback
-    } catch { /* weiter zu Fallback */ }
+    } catch { /* fall through to CUPS fallback */ }
 
-    // Versuch 2: macOS lp-Befehl (CUPS-Treiber, kein Dymo Connect)
+    // Fallback: macOS lp command via CUPS driver
     if (!pngBase64) {
-      return res.json({ ok: false, error: 'Dymo REST API abgelehnt. Kein PNG-Fallback übermittelt.' });
+      return res.json({ ok: false, error: 'Dymo REST API rejected. No PNG fallback provided.' });
     }
     const tmpFile = `/tmp/dymo_${randomUUID()}.png`;
     try {
@@ -238,7 +238,7 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
       console.log(`[dymo-bridge] lp ✓`);
       return res.json({ ok: true });
     } catch (e) {
-      console.error(`[dymo-bridge] lp fehlgeschlagen:`, e);
+      console.error(`[dymo-bridge] lp failed:`, e);
       return res.status(500).json({ ok: false, error: `lp: ${String(e)}` });
     } finally {
       fs.unlink(tmpFile).catch(() => {});
@@ -255,14 +255,14 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
   app.post('/setup', (req, res) => {
     const { token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey } = req.body as Record<string, string>;
     if (!token) {
-      return res.send(setupPage('Bitte den Auth-Token aus Flownt einfügen.'));
+      return res.send(setupPage('Please enter the auth token from Flownt.'));
     }
     const isBambu = adapterType === 'bambu';
     if (isBambu && (!bambuUrl || !bambuSerial || !bambuCode)) {
-      return res.send(setupPage('Bitte IP-Adresse, Seriennummer und Access Code ausfüllen.'));
+      return res.send(setupPage('Please fill in IP address, serial number and access code.'));
     }
     if (!isBambu && !moonrakerUrl) {
-      return res.send(setupPage('Bitte Drucker-URL ausfüllen.'));
+      return res.send(setupPage('Please enter the printer URL.'));
     }
     const cfg: BridgeConfig = {
       flowntAuthToken: token.trim(),
@@ -278,7 +278,7 @@ export function startServer(onConfigSaved: (cfg: BridgeConfig) => void): void {
   });
 
   app.listen(PORT, () => {
-    console.log(`[flownt-bridge] Web-UI läuft auf http://localhost:${PORT}`);
+    console.log(`[flownt-bridge] Web UI running at http://localhost:${PORT}`);
   });
 }
 
