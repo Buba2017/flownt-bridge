@@ -26,11 +26,14 @@ Verbindet deinen 3D-Drucker automatisch mit Flownt. Du siehst dann in Flownt liv
    | Windows | `flownt-bridge-win-x64.exe` |
    | Raspberry Pi (64-bit) | `flownt-bridge-linux-arm64` |
 
-2. **Mac:** Datei einmalig ausführbar machen:
+2. **Mac:** Datei einmalig freigeben (Terminal im Download-Ordner):
    ```bash
    chmod +x flownt-bridge-macos-arm64
+   xattr -dr com.apple.quarantine flownt-bridge-macos-arm64
    ```
-   Dann Doppelklick — falls macOS warnt: **Systemeinstellungen → Datenschutz & Sicherheit → „Trotzdem öffnen"**
+   Danach Doppelklick — die Binary startet ohne Sicherheitswarnung.
+
+   > **Alternativ ohne Terminal:** Rechtsklick auf die Datei → **„Öffnen"** → im Dialog **„Öffnen"** klicken. Nur per Rechtsklick möglich, nicht per Doppelklick.
 
 3. **Windows:** Doppelklick auf `.exe` — bei SmartScreen-Warnung auf **„Weitere Informationen" → „Trotzdem ausführen"**
 
