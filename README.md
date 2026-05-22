@@ -33,7 +33,7 @@ Verbindet deinen 3D-Drucker automatisch mit Flownt. Du siehst dann in Flownt liv
    ```
    Danach Doppelklick — die Binary startet ohne Sicherheitswarnung.
 
-   > **Alternativ ohne Terminal:** Rechtsklick auf die Datei → **„Öffnen"** → im Dialog **„Öffnen"** klicken. Nur per Rechtsklick möglich, nicht per Doppelklick.
+   > **Warum?** macOS blockiert aus dem Internet heruntergeladene Dateien ohne Apple-Signatur. Der `xattr`-Befehl entfernt dieses Quarantäne-Flag einmalig.
 
 3. **Windows:** Doppelklick auf `.exe` — bei SmartScreen-Warnung auf **„Weitere Informationen" → „Trotzdem ausführen"**
 
