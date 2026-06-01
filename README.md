@@ -94,7 +94,41 @@ Click **"Save & Connect"**. The page switches to the status view — a green dot
 
 ---
 
-## Keep the Bridge running (optional)
+## Raspberry Pi — Autostart (empfohlen)
+
+Für einen dauerhaften Betrieb auf einem Raspberry Pi (Zero 2 W, Pi 3, Pi 4):
+
+**Voraussetzung:** Raspberry Pi OS (Bookworm oder Bullseye, 32- oder 64-bit)
+
+```bash
+git clone https://github.com/Buba2017/flownt-bridge.git
+cd flownt-bridge
+npm install
+npm run build
+sudo bash install.sh
+```
+
+Der Installer:
+- Installiert Node.js 20 automatisch (falls nicht vorhanden)
+- Kopiert die Bridge nach `/opt/flownt-bridge/`
+- Richtet einen systemd-Service ein (startet automatisch beim Boot, neustart bei Absturz)
+
+Danach erreichbar unter `http://<Pi-IP-Adresse>:7432` — im Browser auf jedem Gerät im Heimnetz.
+
+```bash
+journalctl -fu flownt-bridge      # Live-Logs
+sudo systemctl stop flownt-bridge  # Stoppen
+sudo systemctl restart flownt-bridge  # Neustarten
+```
+
+**Update:**
+```bash
+git pull && npm run build && sudo bash install.sh
+```
+
+---
+
+## Mac/Windows — Keep the Bridge running (optional)
 
 By default the bridge only runs while the window is open.
 
@@ -132,6 +166,34 @@ Open http://localhost:7432/setup, enter the new token and save.
 
 **Does it work if the printer is on a different network?**
 No — the bridge and printer must be on the same local network.
+
+---
+
+## Status Page
+
+While the bridge is running, open **http://localhost:7432** (or `http://<Pi-IP>:7432` on Raspberry Pi).
+
+The status page shows:
+
+| Section | Details |
+|---|---|
+| Printer status | idle / printing / offline with filename, progress %, temperatures |
+| AMS slots | Color circles per slot, material name, remaining %, active slot highlighted |
+| ETA | Formatted remaining print time (e.g. `1h 23m`) |
+| AMS humidity | Humidity level + temperature per AMS unit |
+| Events | Last 30 events, color-coded: ✓ green (success) · ℹ gray (info) · ⚠ orange (warning) |
+
+The page auto-refreshes every 8 seconds.
+
+**Events logged automatically:**
+- `✓ Verbindung zu Flownt hergestellt` — on startup
+- `✓ Drucker verbunden: <IP>` — when MQTT connects
+- `ℹ Druck gestartet: <filename>` — when a print begins
+- `✓ Druckdatei geladen: <filename> (N Slot(s))` — when FTPS file download succeeds
+- `⚠ Druckdatei nicht via FTPS gefunden` — when all FTPS paths fail
+- `✓ Drucklog erstellt: <filename>` — after job_complete lands in Flownt
+
+**JSON API:** `http://localhost:7432/api/state` — returns the full printer snapshot + event log as JSON.
 
 ---
 

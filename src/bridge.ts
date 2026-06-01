@@ -1,14 +1,16 @@
 import fetch from 'node-fetch';
-import { BridgeConfig, FLOWNT_EDGE_URL } from './config.js';
+import { PrinterConfig, FLOWNT_EDGE_URL } from './config.js';
+import type { PrinterBridgeState } from './server.js';
 import { Adapter, PrinterSnapshot } from './adapters/types.js';
-import { bridgeState } from './server.js';
+import { BambuCloudClient } from './bambu-cloud.js';
+import { addEvent } from './events.js';
 
 async function push(
-  cfg: BridgeConfig,
+  cfg: PrinterConfig,
   snapshot: PrinterSnapshot,
   eventType = 'status_update',
   durationMin?: number,
-): Promise<void> {
+): Promise<string | undefined> {
   const body: Record<string, unknown> = {
     auth_token: cfg.flowntAuthToken,
     event_type: eventType,
@@ -23,6 +25,10 @@ async function push(
   if (snapshot.amsSlots?.length) body.ams_state = snapshot.amsSlots;
   if (snapshot.activeMqttSlot != null) body.ams_active_slot = snapshot.activeMqttSlot;
   if (snapshot.amsHumidity?.length) body.ams_humidity = snapshot.amsHumidity;
+  if (eventType === 'job_complete') {
+    if (snapshot.parsedFilamentWeights?.length) body.filament_weights = snapshot.parsedFilamentWeights;
+    if (snapshot.cloudWeightG != null) body.cloud_weight_g = snapshot.cloudWeightG;
+  }
 
   const res = await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
     method: 'POST',
@@ -34,6 +40,8 @@ async function push(
     const text = await res.text().catch(() => '');
     throw new Error(`bridge-ingest ${res.status}: ${text}`);
   }
+  const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+  return typeof data.print_log_id === 'string' ? data.print_log_id : undefined;
 }
 
 function sleep(ms: number) {
@@ -42,11 +50,15 @@ function sleep(ms: number) {
 
 export async function runBridge(
   adapter: Adapter,
-  cfg: BridgeConfig,
-  state: typeof bridgeState,
+  cfg: PrinterConfig,
+  state: PrinterBridgeState,
   isCancelled: () => boolean,
 ): Promise<void> {
-  console.log('[flownt-bridge] Verbindung wird aufgebaut…');
+  console.log(`[${cfg.name}] Verbindung wird aufgebaut…`);
+
+  const bambuCloud = (cfg.bambuCloudEmail && cfg.bambuCloudPassword)
+    ? new BambuCloudClient(cfg.bambuCloudEmail, cfg.bambuCloudPassword)
+    : null;
 
   // Initial heartbeat to verify token
   try {
@@ -55,11 +67,13 @@ export async function runBridge(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ auth_token: cfg.flowntAuthToken, event_type: 'heartbeat' }),
     });
-    console.log('[flownt-bridge] Auth OK ✓');
+    console.log(`[${cfg.name}] Auth OK ✓`);
     state.error = null;
+    addEvent(cfg.id, 'success', 'Verbindung zu Flownt hergestellt ✓');
   } catch (e) {
-    console.error('[flownt-bridge] Heartbeat fehlgeschlagen:', e);
+    console.error(`[${cfg.name}] Heartbeat fehlgeschlagen:`, e);
     state.error = 'Keine Verbindung zu Flownt. Bitte Token und Server-URL prüfen.';
+    addEvent(cfg.id, 'warn', 'Heartbeat fehlgeschlagen — Token oder Verbindung prüfen');
   }
 
   let consecutiveErrors = 0;
@@ -68,39 +82,58 @@ export async function runBridge(
 
   while (!isCancelled()) {
     try {
-      const snapshot = await adapter.getSnapshot();
+      let snapshot = await adapter.getSnapshot();
       state.snapshot = snapshot;
 
-      // Detect job completion: printing → idle
+      // Detect job completion: printing/paused → idle
       let eventType = 'status_update';
       let durationMin: number | undefined;
-      if (prevStatus === 'printing' && snapshot.status === 'idle') {
+      if ((prevStatus === 'printing' || prevStatus === 'paused') && snapshot.status === 'idle') {
         eventType = 'job_complete';
         if (printStartedAt != null) {
           durationMin = Math.round((Date.now() - printStartedAt) / 60_000);
         }
         printStartedAt = null;
-        console.log(`[flownt-bridge] Job abgeschlossen → Drucklog-Eintrag (${durationMin ?? '?'} min)`);
+        console.log(`[${cfg.name}] Job abgeschlossen → Drucklog-Eintrag (${durationMin ?? '?'} min)`);
       }
-      if (snapshot.status === 'printing' && prevStatus !== 'printing') {
+      // Only (re-)start timer when transitioning into printing from a non-print state
+      if (snapshot.status === 'printing' && prevStatus !== 'printing' && prevStatus !== 'paused') {
         printStartedAt = Date.now();
+        addEvent(cfg.id, 'info', `Druck gestartet: ${snapshot.printFile ?? '–'}`);
       }
 
       prevStatus = snapshot.status;
 
-      await push(cfg, snapshot, eventType, durationMin);
+      // Cloud-Gewicht via Bambu API holen (mit Retry, da Cloud etwas braucht nach Druckende)
+      if (eventType === 'job_complete' && bambuCloud && cfg.adapterSerial) {
+        const cloudWeight = await bambuCloud.getLatestTaskWeightWithRetry(cfg.adapterSerial);
+        if (cloudWeight != null) snapshot = { ...snapshot, cloudWeightG: cloudWeight };
+      }
+
+      // Backend only accepts: idle, printing, maintenance, offline, error
+      // Map "paused" → "printing" (job is still active)
+      const pushSnapshot: PrinterSnapshot = snapshot.status === 'paused'
+        ? { ...snapshot, status: 'printing' }
+        : snapshot;
+
+      const printLogId = await push(cfg, pushSnapshot, eventType, durationMin);
       state.lastPushAt = new Date();
       state.error = null;
       consecutiveErrors = 0;
+      if (eventType === 'job_complete') {
+        const idHint = printLogId ? ` (${printLogId.slice(0, 8)}…)` : '';
+        addEvent(cfg.id, 'success', `Drucklog erstellt${idHint}: ${snapshot.printFile ?? '–'}`);
+      }
 
       const progress = snapshot.progressPct != null ? ` ${snapshot.progressPct}%` : '';
       const file = snapshot.printFile ? ` "${snapshot.printFile}"` : '';
-      console.log(`[flownt-bridge] ${new Date().toISOString()} → ${snapshot.status.toUpperCase()}${file}${progress}`);
+      console.log(`[${cfg.name}] ${new Date().toISOString()} → ${snapshot.status.toUpperCase()}${file}${progress}`);
     } catch (err) {
       consecutiveErrors++;
       const backoff = Math.min(consecutiveErrors * 5_000, 60_000);
       state.error = `Verbindungsfehler (${consecutiveErrors}×). Nächster Versuch in ${backoff / 1000}s.`;
-      console.error(`[flownt-bridge] Fehler (${consecutiveErrors}×):`, err);
+      console.error(`[${cfg.name}] Fehler (${consecutiveErrors}×):`, err);
+      if (consecutiveErrors === 1) addEvent(cfg.id, 'warn', `Verbindungsfehler: ${String(err).slice(0, 80)}`);
       await sleep(backoff);
       continue;
     }

@@ -13,18 +13,33 @@ export interface AmsHumidityUnit {
   temp: number;     // °C
 }
 
+export type PrinterStatus = 'idle' | 'printing' | 'paused' | 'error' | 'offline';
+
+export interface FilamentWeight {
+  filamentIndex: number; // 0-basierter globaler AMS-Index: T0=0, T1=1, T4=AMS2-Slot0
+  grams: number;
+}
+
 export interface PrinterSnapshot {
-  status: 'idle' | 'printing' | 'error' | 'offline';
+  status: PrinterStatus;
   printFile?: string;
   progressPct?: number;
   tempHotend?: number;
   tempBed?: number;
   etaSec?: number;
-  amsSlots?: AmsSlot[];         // AMS-Zustand aus MQTT
-  activeMqttSlot?: number;      // tray_now: globaler Index über alle AMS-Einheiten
-  amsHumidity?: AmsHumidityUnit[]; // Feuchtigkeit + Temperatur pro AMS-Unit
+  amsSlots?: AmsSlot[];
+  activeMqttSlot?: number;
+  amsHumidity?: AmsHumidityUnit[];
+  parsedFilamentWeights?: FilamentWeight[] | null;
+  cloudWeightG?: number | null;
 }
+
+export type PrinterCommand =
+  | { type: 'pause' }
+  | { type: 'resume' }
+  | { type: 'stop' };
 
 export interface Adapter {
   getSnapshot(): Promise<PrinterSnapshot>;
+  sendCommand?(cmd: PrinterCommand): Promise<void>;
 }

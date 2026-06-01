@@ -15,7 +15,9 @@
     "outputPath": "dist"
   },
   "dependencies": {
+    "basic-ftp": "^5.3.1",
     "express": "^4.19.2",
+    "fflate": "^0.8.2",
     "mqtt": "^5.7.3",
     "node-fetch": "^3.3.2",
     "open": "^10.1.0"
