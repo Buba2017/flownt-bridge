@@ -104,8 +104,10 @@ export async function runBridge(
 
       prevStatus = snapshot.status;
 
-      // Cloud-Gewicht via Bambu API holen (mit Retry, da Cloud etwas braucht nach Druckende)
-      if (eventType === 'job_complete' && bambuCloud && cfg.adapterSerial) {
+      // Cloud-Gewicht via Bambu API NUR holen, wenn FTPS nichts geliefert hat.
+      // Bambus Login verschickt sonst bei jedem Druckende einen Verification-Code per Mail.
+      const ftpsGotWeights = (snapshot.parsedFilamentWeights?.length ?? 0) > 0;
+      if (eventType === 'job_complete' && bambuCloud && cfg.adapterSerial && !ftpsGotWeights) {
         const cloudWeight = await bambuCloud.getLatestTaskWeightWithRetry(cfg.adapterSerial);
         if (cloudWeight != null) snapshot = { ...snapshot, cloudWeightG: cloudWeight };
       }
