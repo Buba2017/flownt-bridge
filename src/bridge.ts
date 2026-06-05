@@ -114,12 +114,16 @@ export async function runBridge(
 
       // Einfarbiger Druck: Verbrauch dem aktiven physischen AMS-Slot zuordnen statt der
       // Slicer-Filament-id (Bambus slice_info-id ist NICHT der physische Slot).
-      if (eventType === 'job_complete' && lastActiveSlot != null
-          && snapshot.parsedFilamentWeights?.length === 1) {
+      if (eventType === 'job_complete' && snapshot.parsedFilamentWeights?.length === 1) {
         const fw = snapshot.parsedFilamentWeights[0];
-        if (fw.filamentIndex !== lastActiveSlot) {
-          console.log(`[${cfg.name}] Filament → aktiver AMS-Slot ${lastActiveSlot} (statt Slicer-id ${fw.filamentIndex})`);
-          snapshot = { ...snapshot, parsedFilamentWeights: [{ ...fw, filamentIndex: lastActiveSlot }] };
+        if (lastActiveSlot != null) {
+          const slotLabel = `${String.fromCharCode(65 + Math.floor(lastActiveSlot / 4))}${(lastActiveSlot % 4) + 1}`;
+          if (fw.filamentIndex !== lastActiveSlot) {
+            snapshot = { ...snapshot, parsedFilamentWeights: [{ ...fw, filamentIndex: lastActiveSlot }] };
+          }
+          addEvent(cfg.id, 'info', `Filamentverbrauch → AMS-Slot ${slotLabel} (${fw.grams} g)`);
+        } else {
+          addEvent(cfg.id, 'warn', 'Aktiver AMS-Slot unbekannt — Filament evtl. nicht verknüpft');
         }
       }
 
