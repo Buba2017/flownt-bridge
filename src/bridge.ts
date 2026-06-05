@@ -79,6 +79,7 @@ export async function runBridge(
   let consecutiveErrors = 0;
   let prevStatus: PrinterSnapshot['status'] | null = null;
   let printStartedAt: number | null = null;
+  let lastActiveSlot: number | null = null;   // physischer AMS-Slot (tray_now), global: unit*4+slot
 
   while (!isCancelled()) {
     try {
@@ -103,6 +104,24 @@ export async function runBridge(
       }
 
       prevStatus = snapshot.status;
+
+      // Aktiven physischen AMS-Slot während des Drucks merken (0–15; ≥254 = externe Spule, ignorieren)
+      if (snapshot.status === 'printing'
+          && typeof snapshot.activeMqttSlot === 'number'
+          && snapshot.activeMqttSlot >= 0 && snapshot.activeMqttSlot < 16) {
+        lastActiveSlot = snapshot.activeMqttSlot;
+      }
+
+      // Einfarbiger Druck: Verbrauch dem aktiven physischen AMS-Slot zuordnen statt der
+      // Slicer-Filament-id (Bambus slice_info-id ist NICHT der physische Slot).
+      if (eventType === 'job_complete' && lastActiveSlot != null
+          && snapshot.parsedFilamentWeights?.length === 1) {
+        const fw = snapshot.parsedFilamentWeights[0];
+        if (fw.filamentIndex !== lastActiveSlot) {
+          console.log(`[${cfg.name}] Filament → aktiver AMS-Slot ${lastActiveSlot} (statt Slicer-id ${fw.filamentIndex})`);
+          snapshot = { ...snapshot, parsedFilamentWeights: [{ ...fw, filamentIndex: lastActiveSlot }] };
+        }
+      }
 
       // Cloud-Gewicht via Bambu API NUR holen, wenn FTPS nichts geliefert hat.
       // Bambus Login verschickt sonst bei jedem Druckende einen Verification-Code per Mail.
