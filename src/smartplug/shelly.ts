@@ -1,6 +1,7 @@
 // Shelly Smart-Plug-Client — liest Momentanleistung (W) + Energiezähler (Wh).
-// Unterstützt Gen1 (HTTP /status, meters[]) und Gen2/Plus (RPC /rpc/Switch.GetStatus),
-// mit automatischer Erkennung. Fehlertolerant: liefert bei Problemen null statt zu werfen.
+// Unterstützt Gen1 (HTTP /status, meters[]) und die RPC-Familie Gen2/Gen3/Gen4
+// (/rpc/Switch.GetStatus), mit automatischer Erkennung. Fehlertolerant: liefert
+// bei Problemen null statt zu werfen.
 
 import fetch from 'node-fetch';
 

@@ -97,7 +97,7 @@ const T: Record<BridgeLang, Tr> = {
     confirmDelete: 'Drucker wirklich löschen?',
     smartPlug: 'Smart-Plug / Strommessung (optional)',
     smartPlugIp: 'Shelly IP-Adresse',
-    smartPlugHint: 'Optional — Shelly (Gen1 oder Gen2) im LAN für echte Strommessung. Leer lassen, wenn keiner vorhanden.',
+    smartPlugHint: 'Optional — Shelly (Gen 1/2/3) im LAN für echte Strommessung. Leer lassen, wenn keiner vorhanden.',
   },
   en: {
     bridge: 'Flownt Bridge',
@@ -145,7 +145,7 @@ const T: Record<BridgeLang, Tr> = {
     confirmDelete: 'Really delete this printer?',
     smartPlug: 'Smart plug / power metering (optional)',
     smartPlugIp: 'Shelly IP address',
-    smartPlugHint: 'Optional — a Shelly (Gen1 or Gen2) on your LAN for real power metering. Leave empty if you don\'t have one.',
+    smartPlugHint: 'Optional — a Shelly (Gen 1/2/3) on your LAN for real power metering. Leave empty if you don\'t have one.',
   },
 } as const;
 
