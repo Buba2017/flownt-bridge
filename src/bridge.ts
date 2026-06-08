@@ -30,6 +30,7 @@ async function push(
   if (eventType === 'job_complete') {
     if (snapshot.parsedFilamentWeights?.length) body.filament_weights = snapshot.parsedFilamentWeights;
     if (snapshot.cloudWeightG != null) body.cloud_weight_g = snapshot.cloudWeightG;
+    if (snapshot.energyWhUsed != null) body.energy_wh = snapshot.energyWhUsed;
   }
 
   const res = await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
@@ -87,6 +88,8 @@ export async function runBridge(
   let prevStatus: PrinterSnapshot['status'] | null = null;
   let printStartedAt: number | null = null;
   let lastActiveSlot: number | null = null;   // physischer AMS-Slot (tray_now), global: unit*4+slot
+  let lastEnergyWh: number | null = null;     // letzter Energiezähler-Stand vom Smart-Plug (Wh)
+  let energyStartWh: number | null = null;    // Zählerstand bei Druckstart (für Verbrauchs-Differenz)
 
   while (!isCancelled()) {
     try {
@@ -96,7 +99,10 @@ export async function runBridge(
       // Fehlertolerant — ein nicht erreichbarer Plug darf den Druckerstatus nicht stören.
       if (smartPlug) {
         const reading = await smartPlug.read();
-        if (reading) snapshot = { ...snapshot, powerW: Math.round(reading.powerW) };
+        if (reading) {
+          snapshot = { ...snapshot, powerW: Math.round(reading.powerW) };
+          lastEnergyWh = reading.energyWh;
+        }
       }
 
       state.snapshot = snapshot;
@@ -110,11 +116,21 @@ export async function runBridge(
           durationMin = Math.round((Date.now() - printStartedAt) / 60_000);
         }
         printStartedAt = null;
+        // Gemessener Stromverbrauch = Energiezähler(Ende) − Energiezähler(Start)
+        if (smartPlug && energyStartWh != null && lastEnergyWh != null) {
+          const usedWh = lastEnergyWh - energyStartWh;
+          if (usedWh >= 0 && usedWh < 100_000) { // Guard gegen Zählerreset / Ausreißer
+            snapshot = { ...snapshot, energyWhUsed: usedWh };
+            addEvent(cfg.id, 'info', `Stromverbrauch: ${(usedWh / 1000).toFixed(3)} kWh`);
+          }
+        }
+        energyStartWh = null;
         console.log(`[${cfg.name}] Job abgeschlossen → Drucklog-Eintrag (${durationMin ?? '?'} min)`);
       }
       // Only (re-)start timer when transitioning into printing from a non-print state
       if (snapshot.status === 'printing' && prevStatus !== 'printing' && prevStatus !== 'paused') {
         printStartedAt = Date.now();
+        energyStartWh = lastEnergyWh; // Energiezähler-Stand bei Druckstart merken
         addEvent(cfg.id, 'info', `Druck gestartet: ${snapshot.printFile ?? '–'}`);
       }
 

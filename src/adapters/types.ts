@@ -32,7 +32,8 @@ export interface PrinterSnapshot {
   amsHumidity?: AmsHumidityUnit[];
   parsedFilamentWeights?: FilamentWeight[] | null;
   cloudWeightG?: number | null;
-  powerW?: number | null; // aktuelle Wirkleistung vom Smart-Plug (Shelly), falls konfiguriert
+  powerW?: number | null;       // aktuelle Wirkleistung vom Smart-Plug (Shelly), falls konfiguriert
+  energyWhUsed?: number | null; // gemessener Energieverbrauch des Drucks in Wh (Zähler Ende − Start)
 }
 
 export type PrinterCommand =
