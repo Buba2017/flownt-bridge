@@ -47,6 +47,7 @@ interface Tr {
   paused: string; lastUpdate: string; noEvents: string; events: string;
   bed: string; tokenRequired: string; bambuFieldsRequired: string;
   moonrakerUrlRequired: string; nameRequired: string; confirmDelete: string;
+  smartPlug: string; smartPlugIp: string; smartPlugHint: string;
 }
 
 const T: Record<BridgeLang, Tr> = {
@@ -94,6 +95,9 @@ const T: Record<BridgeLang, Tr> = {
     moonrakerUrlRequired: 'Bitte Drucker-URL eingeben.',
     nameRequired: 'Bitte einen Namen eingeben.',
     confirmDelete: 'Drucker wirklich löschen?',
+    smartPlug: 'Smart-Plug / Strommessung (optional)',
+    smartPlugIp: 'Shelly IP-Adresse',
+    smartPlugHint: 'Optional — Shelly (Gen1 oder Gen2) im LAN für echte Strommessung. Leer lassen, wenn keiner vorhanden.',
   },
   en: {
     bridge: 'Flownt Bridge',
@@ -139,6 +143,9 @@ const T: Record<BridgeLang, Tr> = {
     moonrakerUrlRequired: 'Please enter the printer URL.',
     nameRequired: 'Please enter a name.',
     confirmDelete: 'Really delete this printer?',
+    smartPlug: 'Smart plug / power metering (optional)',
+    smartPlugIp: 'Shelly IP address',
+    smartPlugHint: 'Optional — a Shelly (Gen1 or Gen2) on your LAN for real power metering. Leave empty if you don\'t have one.',
   },
 } as const;
 
@@ -458,6 +465,12 @@ function printerFormPage(printer?: PrinterConfig, error?: string): string {
       <input name="moonrakerKey" type="password" value="${printer?.adapterType === 'moonraker' ? printer.adapterApiKey : ''}"/>
     </div>
 
+    <hr class="sep"/>
+    <div class="section-label" style="margin-bottom:0.625rem;">${t.smartPlug}</div>
+    <label>${t.smartPlugIp}</label>
+    <input name="shellyUrl" placeholder="192.168.1.50" value="${printer?.smartPlugUrl ?? ''}"/>
+    <p class="hint">${t.smartPlugHint}</p>
+
     <button class="btn btn-full" type="submit" style="margin-top:0.5rem;">${t.save}</button>
   </form>
 </div>
@@ -477,7 +490,7 @@ function parseForm(
   id: string,
 ): { cfg: PrinterConfig | null; error?: string } {
   const t = tr();
-  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, bambuCloudEmail, bambuCloudPassword } = body;
+  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
   if (!name?.trim())   return { cfg: null, error: t.nameRequired };
   if (!token?.trim())  return { cfg: null, error: t.tokenRequired };
   const isBambu = adapterType === 'bambu';
@@ -498,6 +511,7 @@ function parseForm(
       pollingIntervalMs: 30_000,
       ...(isBambu && bambuCloudEmail?.trim()    ? { bambuCloudEmail:    bambuCloudEmail.trim()    } : {}),
       ...(isBambu && bambuCloudPassword?.trim() ? { bambuCloudPassword: bambuCloudPassword.trim() } : {}),
+      ...(shellyUrl?.trim() ? { smartPlugType: 'shelly' as const, smartPlugUrl: shellyUrl.trim() } : {}),
     },
   };
 }

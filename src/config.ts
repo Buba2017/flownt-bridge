@@ -7,6 +7,8 @@ export const FLOWNT_EDGE_URL = 'https://qvlmidtunxthqsxfutkq.supabase.co/functio
 
 export type BridgeLang = 'de' | 'en';
 
+export type SmartPlugType = 'shelly';
+
 export interface PrinterConfig {
   id: string;
   name: string;
@@ -18,6 +20,9 @@ export interface PrinterConfig {
   pollingIntervalMs: number;
   bambuCloudEmail?: string;
   bambuCloudPassword?: string;
+  // Optionaler Smart-Plug zur echten Strommessung (Shelly Gen1 + Gen2, Auto-Erkennung).
+  smartPlugType?: SmartPlugType;
+  smartPlugUrl?: string; // IP/Host des Shelly im LAN, z. B. "192.168.178.50"
 }
 
 export interface MultiConfig {

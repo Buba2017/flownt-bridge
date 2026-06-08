@@ -3,6 +3,7 @@ import { PrinterConfig, FLOWNT_EDGE_URL } from './config.js';
 import type { PrinterBridgeState } from './server.js';
 import { Adapter, PrinterSnapshot } from './adapters/types.js';
 import { BambuCloudClient } from './bambu-cloud.js';
+import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
 
 async function push(
@@ -22,6 +23,7 @@ async function push(
     eta_s: snapshot.etaSec,
   };
   if (durationMin != null) body.duration_min = durationMin;
+  if (snapshot.powerW != null) body.live_power_w = snapshot.powerW;
   if (snapshot.amsSlots?.length) body.ams_state = snapshot.amsSlots;
   if (snapshot.activeMqttSlot != null) body.ams_active_slot = snapshot.activeMqttSlot;
   if (snapshot.amsHumidity?.length) body.ams_humidity = snapshot.amsHumidity;
@@ -60,6 +62,11 @@ export async function runBridge(
     ? new BambuCloudClient(cfg.bambuCloudEmail, cfg.bambuCloudPassword)
     : null;
 
+  const smartPlug = (cfg.smartPlugType === 'shelly' && cfg.smartPlugUrl)
+    ? new ShellyClient(cfg.smartPlugUrl)
+    : null;
+  if (smartPlug) addEvent(cfg.id, 'info', `Smart-Plug aktiv: ${cfg.smartPlugUrl}`);
+
   // Initial heartbeat to verify token
   try {
     await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
@@ -84,6 +91,14 @@ export async function runBridge(
   while (!isCancelled()) {
     try {
       let snapshot = await adapter.getSnapshot();
+
+      // Smart-Plug (Shelly): Momentanleistung lesen und in den Snapshot mergen.
+      // Fehlertolerant — ein nicht erreichbarer Plug darf den Druckerstatus nicht stören.
+      if (smartPlug) {
+        const reading = await smartPlug.read();
+        if (reading) snapshot = { ...snapshot, powerW: Math.round(reading.powerW) };
+      }
+
       state.snapshot = snapshot;
 
       // Detect job completion: printing/paused → idle
