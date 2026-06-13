@@ -33,9 +33,12 @@ function parse3mf(buffer: Buffer): FilamentWeight[] {
       const attrs = m[1];
       const idM = attrs.match(/\bid="(\d+)"/i);
       const gM = attrs.match(/used_g="([\d.]+)"/i);
+      const colorM = attrs.match(/\bcolor="(#?[0-9a-fA-F]{6,8})"/i);
       const g = gM ? round2(parseFloat(gM[1])) : 0;
       if (g > 0 && idM) {
-        weights.push({ filamentIndex: parseInt(idM[1], 10), grams: g });
+        // filamentIndex hier = Slicer-Reihenfolge (NICHT der physische AMS-Slot!).
+        // Die physische Zuordnung passiert in bridge.ts per Farbe gegen den AMS-Live-Status.
+        weights.push({ filamentIndex: parseInt(idM[1], 10), grams: g, color: colorM ? colorM[1] : undefined });
       }
     }
     if (weights.length > 0) return weights;

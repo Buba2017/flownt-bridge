@@ -18,6 +18,7 @@ export type PrinterStatus = 'idle' | 'printing' | 'paused' | 'error' | 'offline'
 export interface FilamentWeight {
   filamentIndex: number; // 0-basierter globaler AMS-Index: T0=0, T1=1, T4=AMS2-Slot0
   grams: number;
+  color?: string;        // Slicer-Filamentfarbe (#RRGGBB) aus slice_info.config — für Mehrfarb-Slot-Zuordnung per Farbe
 }
 
 export interface PrinterSnapshot {
