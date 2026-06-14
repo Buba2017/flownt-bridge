@@ -88,7 +88,8 @@ export async function runBridge(
   let prevStatus: PrinterSnapshot['status'] | null = null;
   let printStartedAt: number | null = null;
   let lastActiveSlot: number | null = null;   // physischer AMS-Slot (tray_now), global: unit*4+slot
-  let lastAmsSlots: AmsSlot[] = [];           // letzter AMS-Status (Farbe je physischem Slot) — für Mehrfarb-Zuordnung per Farbe
+  let lastAmsSlots: AmsSlot[] = [];           // letzter AMS-Status (Farbe je physischem Slot) — Fallback-Zuordnung per Farbe
+  let lastFilamentMapping: number[] = [];     // Bambu print.mapping (Slicer-Filament-id → physischer Tray-Code) — primäre, deterministische Zuordnung
   let lastEnergyWh: number | null = null;     // letzter Energiezähler-Stand vom Smart-Plug (Wh)
   let energyStartWh: number | null = null;    // Zählerstand bei Druckstart (für Verbrauchs-Differenz)
 
@@ -143,14 +144,40 @@ export async function runBridge(
           && snapshot.activeMqttSlot >= 0 && snapshot.activeMqttSlot < 16) {
         lastActiveSlot = snapshot.activeMqttSlot;
       }
-      // AMS-Farben während des Drucks merken (für Mehrfarb-Zuordnung; AMS-Daten kommen nicht in jeder MQTT-Nachricht).
+      // AMS-Status + ams_mapping während des Drucks merken (kommen nicht in jeder MQTT-Nachricht).
       if (snapshot.status === 'printing' && snapshot.amsSlots?.length) {
         lastAmsSlots = snapshot.amsSlots;
       }
+      if (snapshot.status === 'printing' && snapshot.filamentMapping?.length) {
+        lastFilamentMapping = snapshot.filamentMapping;
+      }
 
-      // Einfarbiger Druck: Verbrauch dem aktiven physischen AMS-Slot zuordnen statt der
-      // Slicer-Filament-id (Bambus slice_info-id ist NICHT der physische Slot).
-      if (eventType === 'job_complete' && snapshot.parsedFilamentWeights?.length === 1) {
+      // Filament-Zuordnung: der filamentIndex aus dem Parser ist die SLICER-Filament-id (slice_info),
+      // NICHT der physische AMS-Slot. Reihenfolge der Strategien:
+      //  1. PRIMÄR & deterministisch: Bambu print.mapping (mapping[id-1] → Tray-Code; Code: unit=code>>8, slot=code&0xFF → global unit*4+slot)
+      //  2. Fallback Einfarb: aktiver physischer Slot (tray_now)
+      //  3. Fallback Mehrfarb: Zuordnung per Farbe gegen den AMS-Live-Status
+      let mappedByAmsMapping = false;
+      if (eventType === 'job_complete' && snapshot.parsedFilamentWeights?.length && lastFilamentMapping.length) {
+        let cnt = 0;
+        const remapped = snapshot.parsedFilamentWeights.map(fw => {
+          const code = lastFilamentMapping[fw.filamentIndex - 1];
+          if (code == null) return fw;
+          if (code >= 65535) return { ...fw, filamentIndex: 254 }; // ungenutzt/externe Spule → kein AMS-Slot-Link
+          const amsUnit = (code >> 8) & 0xFF;
+          const slot = code & 0xFF;
+          if (amsUnit > 3 || slot > 3) return fw; // unerwartete Kodierung → roh lassen
+          const gi = amsUnit * 4 + slot;
+          if (gi !== fw.filamentIndex) cnt++;
+          return { ...fw, filamentIndex: gi };
+        });
+        snapshot = { ...snapshot, parsedFilamentWeights: remapped };
+        mappedByAmsMapping = true;
+        addEvent(cfg.id, 'info', `Filament-Zuordnung via Bambu ams_mapping (${remapped.length} Filament(e), ${cnt} korrigiert)`);
+      }
+
+      // Fallback Einfarb (nur ohne ams_mapping): Verbrauch dem aktiven physischen AMS-Slot zuordnen.
+      if (!mappedByAmsMapping && eventType === 'job_complete' && snapshot.parsedFilamentWeights?.length === 1) {
         const fw = snapshot.parsedFilamentWeights[0];
         if (lastActiveSlot != null) {
           const slotLabel = `${String.fromCharCode(65 + Math.floor(lastActiveSlot / 4))}${(lastActiveSlot % 4) + 1}`;
@@ -163,9 +190,8 @@ export async function runBridge(
         }
       }
 
-      // Mehrfarb-Druck: der Slicer-Filament-Index (slice_info id) ist NICHT der physische AMS-Slot.
-      // Jeden Filament per FARBE dem echten Slot zuordnen (gegen den gemerkten AMS-Live-Status).
-      if (eventType === 'job_complete' && (snapshot.parsedFilamentWeights?.length ?? 0) > 1) {
+      // Fallback Mehrfarb (nur ohne ams_mapping): Zuordnung per Farbe gegen den AMS-Live-Status.
+      if (!mappedByAmsMapping && eventType === 'job_complete' && (snapshot.parsedFilamentWeights?.length ?? 0) > 1) {
         const slots = snapshot.amsSlots?.length ? snapshot.amsSlots : lastAmsSlots;
         if (slots.length) {
           const normHex = (c?: string) => c ? '#' + c.replace(/^#/, '').replace(/^0x/i, '').slice(0, 6).toUpperCase() : '';
@@ -178,14 +204,14 @@ export async function runBridge(
               const gi = matches[0].ams_unit * 4 + matches[0].slot;
               if (gi !== fw.filamentIndex) { remappedCount++; return { ...fw, filamentIndex: gi }; }
             }
-            return fw; // keine eindeutige Farbübereinstimmung → Slicer-Index beibehalten
+            return fw;
           });
           if (remappedCount > 0) {
             snapshot = { ...snapshot, parsedFilamentWeights: remapped };
-            addEvent(cfg.id, 'info', `Mehrfarb-Druck: ${remappedCount} Filament(e) per Farbe dem AMS-Slot zugeordnet`);
+            addEvent(cfg.id, 'info', `Mehrfarb-Druck: ${remappedCount} Filament(e) per Farbe dem AMS-Slot zugeordnet (Fallback)`);
           }
         } else {
-          addEvent(cfg.id, 'warn', 'Mehrfarb-Druck: kein AMS-Status bekannt — Filamente evtl. nach Slicer-Reihenfolge zugeordnet');
+          addEvent(cfg.id, 'warn', 'Mehrfarb-Druck: kein ams_mapping/AMS-Status — Filamente evtl. nach Slicer-Reihenfolge zugeordnet');
         }
       }
 

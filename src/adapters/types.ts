@@ -31,6 +31,7 @@ export interface PrinterSnapshot {
   amsSlots?: AmsSlot[];
   activeMqttSlot?: number;
   amsHumidity?: AmsHumidityUnit[];
+  filamentMapping?: number[];     // Bambu print.mapping: Slicer-Filament-id (1-basiert) → physischer Tray-Code; 65535 = ungenutzt/extern
   parsedFilamentWeights?: FilamentWeight[] | null;
   cloudWeightG?: number | null;
   powerW?: number | null;       // aktuelle Wirkleistung vom Smart-Plug (Shelly), falls konfiguriert

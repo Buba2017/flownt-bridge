@@ -40,6 +40,7 @@ interface BambuPrint {
     ams?: BambuAmsUnit[];
     tray_now?: number | string; // aktiver Slot (globaler Index: ams_unit*4 + slot); Bambu sendet manchmal string
   };
+  mapping?: number[]; // Slicer-Filament-id (1-basiert, Index = id-1) → physischer Tray-Code; 65535 = ungenutzt/extern
 }
 
 interface BambuReport {
@@ -192,6 +193,7 @@ export class BambuAdapter implements Adapter {
           amsSlots: amsSlots.length > 0 ? amsSlots : this.snapshot.amsSlots,
           activeMqttSlot: trayNow,
           amsHumidity: amsHumidity.length > 0 ? amsHumidity : this.snapshot.amsHumidity,
+          filamentMapping: (Array.isArray(p.mapping) && p.mapping.length > 0) ? p.mapping : this.snapshot.filamentMapping,
           parsedFilamentWeights,
         };
 
