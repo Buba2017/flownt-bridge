@@ -1,7 +1,7 @@
 import mqtt from 'mqtt';
 import { Client as FTPClient } from 'basic-ftp';
 import { Writable } from 'stream';
-import { Adapter, AmsHumidityUnit, AmsSlot, FilamentWeight, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
+import { Adapter, AmsHumidityUnit, AmsSlot, FilamentWeight, JobResult, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
 import { parseFileBuffer } from './bambu-file-parser.js';
 import { addEvent } from '../events.js';
 
@@ -56,6 +56,16 @@ function mapState(state: string): PrinterStatus {
     case 'FINISH':
     case 'CREATED':
     default:        return 'idle';
+  }
+}
+
+// Normalisierter Job-Ausgang aus gcode_state. FINISH = sauber beendet, FAILED = Fehler bzw.
+// manueller Stop (die Firmware meldet beim Stop aktuell FAILED). Sonst kein Terminal → null.
+function mapJobResult(state: string): JobResult | null {
+  switch (state.toUpperCase()) {
+    case 'FINISH': return 'completed';
+    case 'FAILED': return 'failed';
+    default:       return null;
   }
 }
 
@@ -185,6 +195,7 @@ export class BambuAdapter implements Adapter {
 
         this.snapshot = {
           status: newStatus,
+          jobResult: mapJobResult(gcodeState),
           printFile: p.subtask_name || undefined,
           progressPct: p.mc_percent,
           tempHotend: p.nozzle_temper,

@@ -15,6 +15,10 @@ export interface AmsHumidityUnit {
 
 export type PrinterStatus = 'idle' | 'printing' | 'paused' | 'error' | 'offline';
 
+// Normalisierter Job-Ausgang (Stufe C). Vom Adapter beim Terminal-Zustand gesetzt; sonst null.
+// completed = sauber beendet · aborted = abgebrochen (User-Stop/Cancel) · failed = Fehler.
+export type JobResult = 'completed' | 'aborted' | 'failed';
+
 export interface FilamentWeight {
   filamentIndex: number; // 0-basierter globaler AMS-Index: T0=0, T1=1, T4=AMS2-Slot0
   grams: number;
@@ -23,6 +27,7 @@ export interface FilamentWeight {
 
 export interface PrinterSnapshot {
   status: PrinterStatus;
+  jobResult?: JobResult | null; // gesetzt am Terminal-Übergang eines Drucks; sonst null/undefined
   printFile?: string;
   progressPct?: number;
   tempHotend?: number;

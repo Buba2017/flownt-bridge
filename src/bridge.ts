@@ -122,16 +122,20 @@ export async function runBridge(
 
       state.snapshot = snapshot;
 
-      // Detect job completion: printing/paused → idle
+      // Job-Ende erkennen: aktiv (printing/paused) → terminal (idle ODER error).
+      // Ausgang aus dem normalisierten jobResult des Adapters; Fallback aus dem Status.
       let eventType: EventType = 'status_update';
       let durationMin: number | undefined;
-      if ((prevStatus === 'printing' || prevStatus === 'paused') && snapshot.status === 'idle') {
-        eventType = 'job_complete';
+      const wasActive = prevStatus === 'printing' || prevStatus === 'paused';
+      const isTerminal = wasActive && (snapshot.status === 'idle' || snapshot.status === 'error');
+      if (isTerminal) {
+        const outcome = snapshot.jobResult ?? (snapshot.status === 'error' ? 'failed' : 'completed');
+        eventType = outcome === 'completed' ? 'job_complete' : 'job_failed';
         if (printStartedAt != null) {
           durationMin = Math.round((Date.now() - printStartedAt) / 60_000);
         }
         printStartedAt = null;
-        // Gemessener Stromverbrauch = Energiezähler(Ende) − Energiezähler(Start)
+        // Gemessener Stromverbrauch = Energiezähler(Ende) − Energiezähler(Start) — auch bei Abbruch sinnvoll
         if (smartPlug && energyStartWh != null && lastEnergyWh != null) {
           const usedWh = lastEnergyWh - energyStartWh;
           if (usedWh >= 0 && usedWh < 100_000) { // Guard gegen Zählerreset / Ausreißer
@@ -140,7 +144,12 @@ export async function runBridge(
           }
         }
         energyStartWh = null;
-        console.log(`[${cfg.name}] Job abgeschlossen → Drucklog-Eintrag (${durationMin ?? '?'} min)`);
+        if (eventType === 'job_failed') {
+          addEvent(cfg.id, 'warn', `Druck ${outcome === 'aborted' ? 'abgebrochen' : 'fehlgeschlagen'} — kein Materialabzug`);
+          console.log(`[${cfg.name}] Job ${outcome} → Abbruch-Log (${durationMin ?? '?'} min, kein Abzug)`);
+        } else {
+          console.log(`[${cfg.name}] Job abgeschlossen → Drucklog-Eintrag (${durationMin ?? '?'} min)`);
+        }
       }
       // Only (re-)start timer when transitioning into printing from a non-print state
       if (snapshot.status === 'printing' && prevStatus !== 'printing' && prevStatus !== 'paused') {

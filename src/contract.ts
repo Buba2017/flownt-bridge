@@ -11,7 +11,7 @@
 import type { AmsSlot, AmsHumidityUnit, PrinterStatus } from './adapters/types.js';
 
 /** Kanonische Event-Typen, die die Bridge an Flownt sendet. */
-export type EventType = 'heartbeat' | 'status_update' | 'job_complete';
+export type EventType = 'heartbeat' | 'status_update' | 'job_complete' | 'job_failed';
 
 /**
  * Quell-abstrahierte Slot-/Lagerplatz-Referenz (Stufe B).

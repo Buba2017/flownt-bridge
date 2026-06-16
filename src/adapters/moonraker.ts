@@ -1,5 +1,5 @@
 import fetch from 'node-fetch';
-import { Adapter, FilamentWeight, PrinterSnapshot } from './types.js';
+import { Adapter, FilamentWeight, JobResult, PrinterSnapshot } from './types.js';
 import { parseFileBuffer } from './bambu-file-parser.js';
 
 interface MoonrakerPrintStats {
@@ -30,6 +30,17 @@ function mapState(state: string): PrinterSnapshot['status'] {
     case 'cancelled':
     default:
       return 'idle';
+  }
+}
+
+// Normalisierter Job-Ausgang aus print_stats.state. Entscheidend: complete ≠ cancelled
+// (heute kollabieren beide zu idle → der Abbruch würde sonst als Erfolg abgebucht).
+function mapJobResult(state: string): JobResult | null {
+  switch (state) {
+    case 'complete':  return 'completed';
+    case 'cancelled': return 'aborted';
+    case 'error':     return 'failed';
+    default:          return null;
   }
 }
 
@@ -90,6 +101,7 @@ export class MoonrakerAdapter implements Adapter {
 
       return {
         status: printerStatus,
+        jobResult: mapJobResult(ps?.state ?? ''),
         printFile: ps?.filename || undefined,
         progressPct: s.display_status?.progress != null ? Math.round(s.display_status.progress * 100) : undefined,
         tempHotend: s.extruder?.temperature,
