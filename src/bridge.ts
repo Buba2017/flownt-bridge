@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 import { PrinterConfig, FLOWNT_EDGE_URL } from './config.js';
 import type { PrinterBridgeState } from './server.js';
 import { Adapter, PrinterSnapshot, AmsSlot } from './adapters/types.js';
-import { EventType, IngestBody } from './contract.js';
+import { EventType, IngestBody, SlotRef } from './contract.js';
 import { BambuCloudClient } from './bambu-cloud.js';
 import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
@@ -12,6 +12,7 @@ async function push(
   snapshot: PrinterSnapshot,
   eventType: EventType = 'status_update',
   durationMin?: number,
+  slotSource: SlotRef['source'] = 'slicer_order',
 ): Promise<string | undefined> {
   const body: IngestBody = {
     auth_token: cfg.flowntAuthToken,
@@ -29,7 +30,17 @@ async function push(
   if (snapshot.activeMqttSlot != null) body.ams_active_slot = snapshot.activeMqttSlot;
   if (snapshot.amsHumidity?.length) body.ams_humidity = snapshot.amsHumidity;
   if (eventType === 'job_complete') {
-    if (snapshot.parsedFilamentWeights?.length) body.filament_weights = snapshot.parsedFilamentWeights;
+    if (snapshot.parsedFilamentWeights?.length) {
+      // Stufe B: pro Materialzeile die quell-abstrahierte Slot-Referenz mitführen.
+      // `filamentIndex` bleibt unverändert als Kompat-Feld (Backend liest weiterhin dieses Feld).
+      body.filament_weights = snapshot.parsedFilamentWeights.map(fw => ({
+        filamentIndex: fw.filamentIndex,
+        grams: fw.grams,
+        color: fw.color,
+        slotRef: { source: slotSource, value: fw.filamentIndex },
+        measureSource: 'slicer_file' as const,
+      }));
+    }
     if (snapshot.cloudWeightG != null) body.cloud_weight_g = snapshot.cloudWeightG;
     if (snapshot.energyWhUsed != null) body.energy_wh = snapshot.energyWhUsed;
   }
@@ -159,6 +170,9 @@ export async function runBridge(
       //  1. PRIMÄR & deterministisch: Bambu print.mapping (mapping[id-1] → Tray-Code; Code: unit=code>>8, slot=code&0xFF → global unit*4+slot)
       //  2. Fallback Einfarb: aktiver physischer Slot (tray_now)
       //  3. Fallback Mehrfarb: Zuordnung per Farbe gegen den AMS-Live-Status
+      // Quelle der Slot-Identität für diese Buchung (Stufe B): default Slicer-Reihenfolge,
+      // wird in den Bambu-AMS-Pfaden auf 'ams' angehoben. Künftig 'nfc'.
+      let slotSource: SlotRef['source'] = 'slicer_order';
       let mappedByAmsMapping = false;
       if (eventType === 'job_complete' && snapshot.parsedFilamentWeights?.length && lastFilamentMapping.length) {
         let cnt = 0;
@@ -175,6 +189,7 @@ export async function runBridge(
         });
         snapshot = { ...snapshot, parsedFilamentWeights: remapped };
         mappedByAmsMapping = true;
+        slotSource = 'ams';
         addEvent(cfg.id, 'info', `Filament-Zuordnung via Bambu ams_mapping (${remapped.length} Filament(e), ${cnt} korrigiert)`);
       }
 
@@ -186,6 +201,7 @@ export async function runBridge(
           if (fw.filamentIndex !== lastActiveSlot) {
             snapshot = { ...snapshot, parsedFilamentWeights: [{ ...fw, filamentIndex: lastActiveSlot }] };
           }
+          slotSource = 'ams';
           addEvent(cfg.id, 'info', `Filamentverbrauch → AMS-Slot ${slotLabel} (${fw.grams} g)`);
         } else {
           addEvent(cfg.id, 'warn', 'Aktiver AMS-Slot unbekannt — Filament evtl. nicht verknüpft');
@@ -210,6 +226,7 @@ export async function runBridge(
           });
           if (remappedCount > 0) {
             snapshot = { ...snapshot, parsedFilamentWeights: remapped };
+            slotSource = 'ams';
             addEvent(cfg.id, 'info', `Mehrfarb-Druck: ${remappedCount} Filament(e) per Farbe dem AMS-Slot zugeordnet (Fallback)`);
           }
         } else {
@@ -231,7 +248,7 @@ export async function runBridge(
         ? { ...snapshot, status: 'printing' }
         : snapshot;
 
-      const printLogId = await push(cfg, pushSnapshot, eventType, durationMin);
+      const printLogId = await push(cfg, pushSnapshot, eventType, durationMin, slotSource);
       state.lastPushAt = new Date();
       state.error = null;
       consecutiveErrors = 0;

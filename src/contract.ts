@@ -8,10 +8,37 @@
 //
 // Spätere Stufen: B abstrahiert die Slot-/Spulen-Identität (AMS heute → NFC später) als
 // eigenes `MaterialLine`-Modell; C bringt Moonraker auf Parität (job_failed, Slot-Ref).
-import type { AmsSlot, AmsHumidityUnit, FilamentWeight, PrinterStatus } from './adapters/types.js';
+import type { AmsSlot, AmsHumidityUnit, PrinterStatus } from './adapters/types.js';
 
 /** Kanonische Event-Typen, die die Bridge an Flownt sendet. */
 export type EventType = 'heartbeat' | 'status_update' | 'job_complete';
+
+/**
+ * Quell-abstrahierte Slot-/Lagerplatz-Referenz (Stufe B).
+ * Entkoppelt die Identität von der Vendor-Quelle: heute AMS-Readout, künftig NFC-Tag.
+ *  - `ams`          → `value` = globaler AMS-Index (unit*4+slot); 254 = externe Spule (kein AMS-Link)
+ *  - `slicer_order` → `value` = 0-basierte Slicer-Filament-Reihenfolge (kein physischer Slot bekannt, z. B. Moonraker)
+ *  - `nfc`          → `value` = (künftig) NFC-Tag-abgeleitete Slot-/Spulen-Identität
+ */
+export interface SlotRef {
+  source: 'ams' | 'slicer_order' | 'nfc';
+  value: number;
+}
+
+/**
+ * Eine verbrauchte Materialzeile im `job_complete`. Trägt die Gramm, die quell-abstrahierte
+ * Slot-Referenz und die Messquelle. Die gematchte Spule (spoolRef) wird im Backend
+ * (bridge-ingest) gegen den Bestand aufgelöst und von der Bridge NICHT gesetzt.
+ * `filamentIndex` bleibt als Kompatibilitäts-Feld mit unveränderter Bedeutung erhalten —
+ * das Backend liest weiterhin dieses Feld (kein Bruch).
+ */
+export interface MaterialLine {
+  filamentIndex: number;                          // Kompat — heutige Semantik, unverändert
+  grams: number;
+  color?: string;
+  slotRef: SlotRef;                               // abstrahierte Slot-/Lagerplatz-Identität
+  measureSource: 'slicer_file' | 'bambu_cloud';   // Quelle der Gewichtsmessung
+}
 
 /**
  * Wire-Body des POST an `${FLOWNT_EDGE_URL}/bridge-ingest`.
@@ -35,7 +62,7 @@ export interface IngestBody {
   ams_active_slot?: number;
   ams_humidity?: AmsHumidityUnit[];
   // Nur job_complete: verbrauchtes Material + optionale Mess-/Energie-Quellen
-  filament_weights?: FilamentWeight[];
+  filament_weights?: MaterialLine[];
   cloud_weight_g?: number;
   energy_wh?: number;
 }
