@@ -2,6 +2,7 @@ import fetch from 'node-fetch';
 import { PrinterConfig, FLOWNT_EDGE_URL } from './config.js';
 import type { PrinterBridgeState } from './server.js';
 import { Adapter, PrinterSnapshot, AmsSlot } from './adapters/types.js';
+import { EventType, IngestBody } from './contract.js';
 import { BambuCloudClient } from './bambu-cloud.js';
 import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
@@ -9,10 +10,10 @@ import { addEvent } from './events.js';
 async function push(
   cfg: PrinterConfig,
   snapshot: PrinterSnapshot,
-  eventType = 'status_update',
+  eventType: EventType = 'status_update',
   durationMin?: number,
 ): Promise<string | undefined> {
-  const body: Record<string, unknown> = {
+  const body: IngestBody = {
     auth_token: cfg.flowntAuthToken,
     event_type: eventType,
     printer_status: snapshot.status,
@@ -70,10 +71,11 @@ export async function runBridge(
 
   // Initial heartbeat to verify token
   try {
+    const heartbeat: IngestBody = { auth_token: cfg.flowntAuthToken, event_type: 'heartbeat' };
     await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auth_token: cfg.flowntAuthToken, event_type: 'heartbeat' }),
+      body: JSON.stringify(heartbeat),
     });
     console.log(`[${cfg.name}] Auth OK ✓`);
     state.error = null;
@@ -110,7 +112,7 @@ export async function runBridge(
       state.snapshot = snapshot;
 
       // Detect job completion: printing/paused → idle
-      let eventType = 'status_update';
+      let eventType: EventType = 'status_update';
       let durationMin: number | undefined;
       if ((prevStatus === 'printing' || prevStatus === 'paused') && snapshot.status === 'idle') {
         eventType = 'job_complete';
