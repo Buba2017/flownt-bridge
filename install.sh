@@ -10,8 +10,6 @@ set -euo pipefail
 
 REPO="Buba2017/flownt-bridge"
 PORT=7432
-INSTALL_DIR="$HOME/.flownt-bridge"
-BIN="$INSTALL_DIR/flownt-bridge"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 say() { echo -e "$@"; }
 
@@ -33,6 +31,16 @@ case "$ARCH" in
 esac
 ASSET="flownt-bridge-${PLATFORM}-${A}"
 URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+
+# Installationsziel: System-Pfad bei Root-Install (Linux → systemd-System-Dienst),
+# sonst pro Nutzer. Verhindert, dass der Dienst (als Nicht-Root-User) eine Binary
+# unter /root nicht ausführen kann.
+if [ "$PLATFORM" = "linux" ] && [ "$(id -u)" = "0" ]; then
+  INSTALL_DIR="/opt/flownt-bridge"
+else
+  INSTALL_DIR="$HOME/.flownt-bridge"
+fi
+BIN="$INSTALL_DIR/flownt-bridge"
 
 # 2) Binary laden (curl setzt KEINE macOS-Quarantäne → kein Gatekeeper-Block)
 say "Lade ${BOLD}${ASSET}${NC} …"
