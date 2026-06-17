@@ -82,7 +82,7 @@ if (existing.printers.length > 0) {
   }
   console.log(`[flownt-bridge] Status: ${URL}`);
 } else {
-  console.log(`[flownt-bridge] Noch nicht eingerichtet. Öffne ${URL}/setup/new im Browser…`);
+  console.log(`[flownt-bridge] Noch nicht eingerichtet. Öffne ${URL} im Browser…`);
   const isHeadless = process.platform === 'linux' && !process.env.DISPLAY;
-  if (!isHeadless) open(`${URL}/setup/new`).catch(() => {});
+  if (!isHeadless) open(`${URL}/`).catch(() => {});
 }

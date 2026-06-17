@@ -6,7 +6,7 @@ import { promises as fs } from 'fs';
 import { randomUUID } from 'crypto';
 import {
   loadMultiConfig, saveMultiConfig,
-  PrinterConfig, BridgeLang, newPrinterId,
+  PrinterConfig, BridgeLang, BridgeRole, newPrinterId,
 } from './config.js';
 import { Adapter, PrinterCommand, PrinterSnapshot } from './adapters/types.js';
 import { getEventLog } from './events.js';
@@ -48,6 +48,10 @@ interface Tr {
   bed: string; tokenRequired: string; bambuFieldsRequired: string;
   moonrakerUrlRequired: string; nameRequired: string; confirmDelete: string;
   smartPlug: string; smartPlugIp: string; smartPlugHint: string;
+  roleQ: string; roleHint: string; roleMonitor: string; roleMonitorD: string;
+  roleLabel: string; roleLabelD: string; roleBoth: string; roleBothD: string;
+  changeRole: string; labelTitle: string; labelPrinterLbl: string;
+  labelNone: string; labelTest: string; labelReady: string; refresh: string;
 }
 
 const T: Record<BridgeLang, Tr> = {
@@ -98,6 +102,21 @@ const T: Record<BridgeLang, Tr> = {
     smartPlug: 'Smart-Plug / Strommessung (optional)',
     smartPlugIp: 'Shelly IP-Adresse',
     smartPlugHint: 'Optional — Shelly (Gen 1/2/3) im LAN für echte Strommessung. Leer lassen, wenn keiner vorhanden.',
+    roleQ: 'Was soll diese Bridge tun?',
+    roleHint: 'Du kannst das jederzeit ändern.',
+    roleMonitor: 'Drucker überwachen',
+    roleMonitorD: 'Live-Status & automatische Drucklogs (z. B. dauerhaft auf dem Pi).',
+    roleLabel: 'Etiketten drucken',
+    roleLabelD: 'Lokaler Etikettendruck (Dymo & Co.) von diesem Gerät.',
+    roleBoth: 'Beides',
+    roleBothD: 'Überwachen und Etiketten drucken auf diesem Gerät.',
+    changeRole: 'Rolle ändern',
+    labelTitle: 'Etikettendruck',
+    labelPrinterLbl: 'Etikettendrucker',
+    labelNone: 'Kein Drucker erkannt. Ist er angeschlossen & eingeschaltet?',
+    labelTest: 'Test-Druck',
+    labelReady: 'Bereit für Etikettendruck aus Flownt.',
+    refresh: 'Aktualisieren',
   },
   en: {
     bridge: 'Flownt Bridge',
@@ -146,6 +165,21 @@ const T: Record<BridgeLang, Tr> = {
     smartPlug: 'Smart plug / power metering (optional)',
     smartPlugIp: 'Shelly IP address',
     smartPlugHint: 'Optional — a Shelly (Gen 1/2/3) on your LAN for real power metering. Leave empty if you don\'t have one.',
+    roleQ: 'What should this bridge do?',
+    roleHint: 'You can change this anytime.',
+    roleMonitor: 'Monitor printers',
+    roleMonitorD: 'Live status & automatic print logs (e.g. always-on the Pi).',
+    roleLabel: 'Print labels',
+    roleLabelD: 'Local label printing (Dymo etc.) from this device.',
+    roleBoth: 'Both',
+    roleBothD: 'Monitor and print labels on this device.',
+    changeRole: 'Change role',
+    labelTitle: 'Label printing',
+    labelPrinterLbl: 'Label printer',
+    labelNone: 'No printer detected. Is it connected & powered on?',
+    labelTest: 'Test print',
+    labelReady: 'Ready for label printing from Flownt.',
+    refresh: 'Refresh',
   },
 } as const;
 
@@ -232,6 +266,81 @@ function langSelector(returnUrl: string): string {
       <option value="en" ${lang === 'en' ? 'selected' : ''}>English</option>
     </select>
   </form>`;
+}
+
+// ── Role selection + label dashboard (Phase 2) ──────────────────────────────────
+
+function escAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Erkannte System-Drucker auflisten (CUPS auf macOS/Linux, Get-Printer auf Windows).
+function listSystemPrinters(): Promise<string[]> {
+  return new Promise((resolve) => {
+    const parse = (out: string) => resolve([...new Set(out.split('\n').map(s => s.trim()).filter(Boolean))]);
+    if (process.platform === 'win32') {
+      execFile('powershell', ['-NoProfile', '-Command', 'Get-Printer | Select-Object -ExpandProperty Name'],
+        (err, stdout) => parse(err ? '' : stdout));
+    } else {
+      execFile('lpstat', ['-e'], (err, stdout) => parse(err ? '' : stdout));
+    }
+  });
+}
+
+function rolePage(): string {
+  const t = tr();
+  const opt = (role: string, title: string, desc: string) => `
+    <form method="POST" action="/role" style="margin-bottom:0.75rem;">
+      <input type="hidden" name="role" value="${role}"/>
+      <button type="submit" class="btn btn-ghost btn-full" style="flex-direction:column;align-items:flex-start;padding:1rem;gap:0.25rem;text-align:left;">
+        <span style="font-weight:700;color:#e5e5e5;font-size:0.95rem;">${title}</span>
+        <span style="font-size:0.78rem;color:#888;">${desc}</span>
+      </button>
+    </form>`;
+  return html(t.roleQ, `
+    <div class="topbar"><span class="logo">Flownt Bridge</span>${langSelector('/role')}</div>
+    <div class="card card-sm">
+      <h1>${t.roleQ}</h1>
+      <p class="hint">${t.roleHint}</p>
+      ${opt('monitor', t.roleMonitor, t.roleMonitorD)}
+      ${opt('label', t.roleLabel, t.roleLabelD)}
+      ${opt('both', t.roleBoth, t.roleBothD)}
+    </div>`);
+}
+
+function labelPage(printers: string[], saved = false): string {
+  const t = tr();
+  const cfg = loadMultiConfig();
+  const sel = cfg.labelPrinter ?? '';
+  const saveTxt = getLang() === 'de' ? 'Speichern' : 'Save';
+  const body = `
+    <div class="topbar">
+      <span class="logo">Flownt Bridge</span>
+      <div class="topbar-right">
+        <a href="/role" class="btn btn-ghost">${t.changeRole}</a>
+        ${langSelector('/label')}
+      </div>
+    </div>
+    <div class="card card-sm">
+      <h1>${t.labelTitle}</h1>
+      ${saved ? `<span class="badge" style="margin-bottom:1rem;">✓</span>` : ''}
+      ${printers.length === 0
+        ? `<p class="empty">${t.labelNone}</p><a href="/label" class="btn btn-ghost btn-full">${t.refresh}</a>`
+        : `<form method="POST" action="/label">
+             <label>${t.labelPrinterLbl}</label>
+             <select name="labelPrinter">
+               ${printers.map(p => `<option value="${escAttr(p)}" ${p === sel ? 'selected' : ''}>${escAttr(p)}</option>`).join('')}
+             </select>
+             <button type="submit" class="btn btn-full">${saveTxt}</button>
+           </form>
+           <hr class="sep"/>
+           <form method="POST" action="/label/test">
+             <input type="hidden" name="printer" value="${escAttr(sel)}"/>
+             <button type="submit" class="btn btn-ghost btn-full" ${sel ? '' : 'disabled'}>${t.labelTest}</button>
+           </form>
+           <p class="hint" style="margin-top:1rem;margin-bottom:0;">${t.labelReady}</p>`}
+    </div>`;
+  return html(t.labelTitle, body);
 }
 
 // ── Status page ────────────────────────────────────────────────────────────────
@@ -690,8 +799,61 @@ export function startServer(callbacks: ServerCallbacks): void {
 
   app.get('/', (_req, res) => {
     const cfg = loadMultiConfig();
+    // Rolle noch nicht gewählt: Bestandsinstanzen mit Druckern (z. B. Pi) nicht zur Wahl zwingen,
+    // frische Instanzen ohne Drucker auf die Rollen-Auswahl leiten.
+    if (!cfg.role) {
+      if (cfg.printers.length > 0) return res.send(statusPage());
+      return res.redirect('/role');
+    }
+    if (cfg.role === 'label') return res.redirect('/label');
     if (cfg.printers.length === 0) return res.redirect('/setup/new');
     res.send(statusPage());
+  });
+
+  // ── Rollenwahl (Phase 2) ─────────────────────────────────────────────────────
+  app.get('/role', (_req, res) => res.send(rolePage()));
+  app.post('/role', (req, res) => {
+    const role = (req.body as { role?: string }).role;
+    if (role === 'monitor' || role === 'label' || role === 'both') {
+      const cfg = loadMultiConfig();
+      cfg.role = role as BridgeRole;
+      saveMultiConfig(cfg);
+      if (role === 'label') return res.redirect('/label');
+      return res.redirect(cfg.printers.length ? '/' : '/setup/new');
+    }
+    res.redirect('/role');
+  });
+
+  // ── Etikettendruck-Dashboard (Phase 2) ───────────────────────────────────────
+  app.get('/label', async (req, res) => {
+    const printers = await listSystemPrinters();
+    res.send(labelPage(printers, req.query.saved === '1'));
+  });
+  app.post('/label', (req, res) => {
+    const cfg = loadMultiConfig();
+    cfg.labelPrinter = ((req.body as { labelPrinter?: string }).labelPrinter || '').trim() || undefined;
+    if (!cfg.role) cfg.role = 'label';
+    saveMultiConfig(cfg);
+    res.redirect('/label?saved=1');
+  });
+  app.post('/label/test', async (req, res) => {
+    const cfg = loadMultiConfig();
+    const printer = ((req.body as { printer?: string }).printer || cfg.labelPrinter || '').trim();
+    if (printer) {
+      try {
+        if (process.platform === 'win32') {
+          await new Promise<void>((resolve) => execFile('powershell',
+            ['-NoProfile', '-Command', `'Flownt Bridge — Test' | Out-Printer -Name '${printer.replace(/'/g, "''")}'`],
+            () => resolve()));
+        } else {
+          const tmp = `/tmp/flownt_test_${randomUUID()}.txt`;
+          await fs.writeFile(tmp, 'Flownt Bridge — Test\n');
+          await new Promise<void>((resolve) => execFile('lp', ['-d', printer.replace(/ /g, '_'), tmp], () => resolve()));
+          fs.unlink(tmp).catch(() => {});
+        }
+      } catch { /* best effort */ }
+    }
+    res.redirect('/label?saved=1');
   });
 
   app.get('/setup', (_req, res) => res.send(setupListPage()));

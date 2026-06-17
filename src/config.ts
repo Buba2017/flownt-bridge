@@ -25,10 +25,14 @@ export interface PrinterConfig {
   smartPlugUrl?: string; // IP/Host des Shelly im LAN, z. B. "192.168.178.50"
 }
 
+export type BridgeRole = 'monitor' | 'label' | 'both';
+
 export interface MultiConfig {
   version: 2;
   language: BridgeLang;
   printers: PrinterConfig[];
+  role?: BridgeRole;       // was diese Bridge-Instanz tun soll (Web-UI-Rollenwahl, Phase 2)
+  labelPrinter?: string;   // ausgewählter Etikettendrucker (System-/CUPS-Name)
 }
 
 const CONFIG_DIR  = join(homedir(), '.flownt-bridge');
