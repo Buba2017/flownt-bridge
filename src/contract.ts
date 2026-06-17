@@ -49,6 +49,7 @@ export interface MaterialLine {
 export interface IngestBody {
   auth_token: string;
   event_type: EventType;
+  bridge_version?: string;  // gemeldete Bridge-Version (für Update-/Abhängigkeits-Hinweise in Flownt)
   // Status (status_update + job_complete)
   printer_status?: PrinterStatus;
   print_file?: string;

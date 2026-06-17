@@ -3,6 +3,7 @@ import { PrinterConfig, FLOWNT_EDGE_URL } from './config.js';
 import type { PrinterBridgeState } from './server.js';
 import { Adapter, PrinterSnapshot, AmsSlot } from './adapters/types.js';
 import { EventType, IngestBody, SlotRef } from './contract.js';
+import { BRIDGE_VERSION } from './version.js';
 import { BambuCloudClient } from './bambu-cloud.js';
 import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
@@ -17,6 +18,7 @@ async function push(
   const body: IngestBody = {
     auth_token: cfg.flowntAuthToken,
     event_type: eventType,
+    bridge_version: BRIDGE_VERSION,
     printer_status: snapshot.status,
     print_file: snapshot.printFile,
     progress_pct: snapshot.progressPct,
@@ -82,7 +84,7 @@ export async function runBridge(
 
   // Initial heartbeat to verify token
   try {
-    const heartbeat: IngestBody = { auth_token: cfg.flowntAuthToken, event_type: 'heartbeat' };
+    const heartbeat: IngestBody = { auth_token: cfg.flowntAuthToken, event_type: 'heartbeat', bridge_version: BRIDGE_VERSION };
     await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
