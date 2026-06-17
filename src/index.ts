@@ -5,9 +5,12 @@ import { BambuAdapter } from './adapters/bambu.js';
 import { startServer, printerStates, PrinterBridgeState } from './server.js';
 import { runBridge } from './bridge.js';
 import { Adapter } from './adapters/types.js';
+import { BRIDGE_VERSION } from './version.js';
 
 const PORT = 7432;
 const URL  = `http://localhost:${PORT}`;
+
+console.log(`[flownt-bridge] v${BRIDGE_VERSION} startet…`);
 
 function buildAdapter(cfg: PrinterConfig): Adapter {
   if (cfg.adapterType === 'bambu') {

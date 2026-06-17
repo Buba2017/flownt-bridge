@@ -10,6 +10,7 @@ import {
 } from './config.js';
 import { Adapter, PrinterCommand, PrinterSnapshot } from './adapters/types.js';
 import { getEventLog } from './events.js';
+import { BRIDGE_VERSION } from './version.js';
 
 const PORT = 7432;
 
@@ -244,10 +245,12 @@ function html(title: string, body: string, autoRefresh = false): string {
   hr.sep { border: none; border-top: 1px solid #222; margin: 0.875rem 0; }
   .empty { color: #333; font-size: 0.85rem; text-align: center; padding: 1.5rem 0; }
   .err-banner { color: #ef4444; background: #ef444415; border: 1px solid #ef444430; border-radius: 8px; padding: 0.625rem 0.875rem; margin-bottom: 1rem; font-size: 0.85rem; }
+  .ver-footer { color: #444; font-size: 0.72rem; margin-top: auto; padding-top: 1rem; }
 </style>
 </head>
 <body>
 ${body}
+<div class="ver-footer">Flownt Bridge v${BRIDGE_VERSION}</div>
 ${autoRefresh ? '<script>setTimeout(() => location.reload(), 8000);</script>' : ''}
 </body>
 </html>`;
@@ -767,6 +770,8 @@ export function startServer(callbacks: ServerCallbacks): void {
   });
 
   // ── API state ───────────────────────────────────────────────────────────────
+
+  app.get('/api/version', (_req, res) => res.json({ version: BRIDGE_VERSION }));
 
   app.get('/api/state', (_req, res) => {
     const cfg = loadMultiConfig();
