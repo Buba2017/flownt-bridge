@@ -15,45 +15,53 @@ Connects your 3D printer to Flownt in real time — live status, temperatures, p
 
 ## Installation
 
-### Option A – Standalone Binary (recommended, no Node.js required)
+### Option A – Ein Befehl (empfohlen)
 
-Download the file for your system from [Releases](https://github.com/Buba2017/flownt-bridge/releases/latest):
+Erkennt System & Architektur automatisch, lädt die passende Binary, löst die
+Sicherheits-Sperre (macOS-Quarantäne / Windows-SmartScreen), richtet **Autostart**
+ein und startet die Bridge. Erneut ausführen = auf neueste Version aktualisieren.
 
-| System | File |
+**macOS & Linux (Raspberry Pi / Mini-PC):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Buba2017/flownt-bridge/main/install.sh | bash
+```
+*(Für einen System-Dienst auf dem Pi mit `sudo bash` davor ausführen.)*
+
+**Windows** (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/Buba2017/flownt-bridge/main/install.ps1 | iex
+```
+
+Danach öffnet sich die Web-Oberfläche unter **http://localhost:7432** — dort wählst du,
+was diese Bridge tun soll (Drucker überwachen / Etiketten drucken).
+
+---
+
+### Option B – Binary manuell
+
+Datei für dein System aus den [Releases](https://github.com/Buba2017/flownt-bridge/releases/latest) laden:
+
+| System | Datei |
 |---|---|
 | Mac (Apple Silicon / M1–M4) | `flownt-bridge-macos-arm64` |
 | Mac (Intel) | `flownt-bridge-macos-x64` |
 | Windows | `flownt-bridge-win-x64.exe` |
 | Raspberry Pi (64-bit) | `flownt-bridge-linux-arm64` |
+| Linux PC (64-bit) | `flownt-bridge-linux-x64` |
 
-**Mac** — make the file executable (run once in Terminal):
+**Mac** — einmalig im Terminal ausführbar machen + Quarantäne lösen:
 ```bash
-chmod +x flownt-bridge-macos-arm64
-xattr -dr com.apple.quarantine flownt-bridge-macos-arm64
+chmod +x flownt-bridge-macos-arm64 && xattr -d com.apple.quarantine flownt-bridge-macos-arm64
 ```
-Then double-click — the binary starts without any security warning.
-
-> **Why?** macOS blocks files downloaded from the internet that are not signed by Apple. The `xattr` command removes this quarantine flag once.
-
-**Windows** — double-click the `.exe`. If SmartScreen warns you: click **"More info" → "Run anyway"**.
-
-**Raspberry Pi:**
-```bash
-chmod +x flownt-bridge-linux-arm64
-./flownt-bridge-linux-arm64
-```
-
-The browser opens automatically with the setup wizard.
+**Windows** — `.exe` doppelklicken. Bei SmartScreen-Warnung: **„Weitere Informationen" → „Trotzdem ausführen"**.
 
 ---
 
-### Option B – Via Terminal / Command Prompt (Node.js 18+ required)
+### Option C – Aus dem Quellcode (Node.js 18+)
 
 ```bash
 git clone https://github.com/Buba2017/flownt-bridge.git
-cd flownt-bridge
-npm install
-npm start
+cd flownt-bridge && npm install && npm start
 ```
 
 ---
