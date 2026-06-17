@@ -502,6 +502,7 @@ function setupListPage(): string {
   <span class="logo">⬡ ${t.bridge}</span>
   <div class="topbar-right">
     ${langSelector('/setup')}
+    <a href="/role" class="btn btn-ghost">${t.changeRole}</a>
     ${cfg.printers.length > 0 ? `<a href="/" class="btn btn-ghost">${t.backToStatus}</a>` : ''}
   </div>
 </div>
@@ -529,7 +530,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string): string {
   <span class="logo">⬡ ${t.bridge}</span>
   <div class="topbar-right">
     ${langSelector(action)}
-    <a href="${cfg.printers.length > 0 ? '/setup' : '/'}" class="btn btn-ghost">${t.cancel}</a>
+    <a href="/setup" class="btn btn-ghost">${t.cancel}</a>
   </div>
 </div>
 <div class="card card-sm">
@@ -806,7 +807,7 @@ export function startServer(callbacks: ServerCallbacks): void {
       return res.redirect('/role');
     }
     if (cfg.role === 'label') return res.redirect('/label');
-    if (cfg.printers.length === 0) return res.redirect('/setup/new');
+    if (cfg.printers.length === 0) return res.redirect('/setup');
     res.send(statusPage());
   });
 
@@ -819,7 +820,7 @@ export function startServer(callbacks: ServerCallbacks): void {
       cfg.role = role as BridgeRole;
       saveMultiConfig(cfg);
       if (role === 'label') return res.redirect('/label');
-      return res.redirect(cfg.printers.length ? '/' : '/setup/new');
+      return res.redirect(cfg.printers.length ? '/' : '/setup');
     }
     res.redirect('/role');
   });
