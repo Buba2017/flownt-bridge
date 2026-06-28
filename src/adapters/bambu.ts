@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import { Client as FTPClient } from 'basic-ftp';
+import { Client as FTPClient, FileInfo } from 'basic-ftp';
 import { Writable } from 'stream';
 import { Adapter, AmsHumidityUnit, AmsSlot, FilamentWeight, JobResult, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
 import { parseFileBuffer } from './bambu-file-parser.js';
@@ -107,6 +107,17 @@ class BufferWritable extends Writable {
   private chunks: Buffer[] = [];
   _write(chunk: Buffer, _enc: string, cb: () => void) { this.chunks.push(chunk); cb(); }
   getBuffer(): Buffer { return Buffer.concat(this.chunks); }
+}
+
+// Leerzeichen und Unterstriche gleichsetzen: Bambu Studio bereinigt beim Senden
+// "Modell v3" → "Modell_v3" (liegt in /cache/), ein SD-Start meldet aber den
+// Originalnamen mit Leerzeichen. So matchen beide Schreibweisen.
+function normalizeName(s: string): string {
+  return s.toLowerCase().replace(/[\s_]+/g, '_');
+}
+
+function joinPath(dir: string, name: string): string {
+  return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
 }
 
 export class BambuAdapter implements Adapter {
@@ -243,12 +254,18 @@ export class BambuAdapter implements Adapter {
     // FTPS-Root ist die SD-Karte. Dateien liegen als "{name}.gcode.3mf" (Bambu Studio)
     // HA sucht: /cache/ zuerst, dann Root /
     const name = subtaskName;
-    const candidates: string[] = [
-      `/cache/${name}.gcode.3mf`,
-      `/cache/${name}.3mf`,
-      `/${name}.gcode.3mf`,
-      `/${name}.3mf`,
-    ];
+    // Bambu Studio bereinigt beim Senden Leerzeichen → Unterstriche und legt die
+    // Datei so in /cache/ ab; MQTT meldet aber oft den Originalnamen mit Leerzeichen
+    // (z. B. bei SD-Start). Darum beide Schreibweisen als feste Kandidaten probieren,
+    // bevor die teure rekursive SD-Suche greift.
+    const underscored = name.replace(/ /g, '_');
+    const nameVariants = underscored === name ? [name] : [name, underscored];
+    const candidates: string[] = nameVariants.flatMap((n) => [
+      `/cache/${n}.gcode.3mf`,
+      `/cache/${n}.3mf`,
+      `/${n}.gcode.3mf`,
+      `/${n}.3mf`,
+    ]);
     const filename = `${name}.gcode.3mf`;
     console.log(`[bambu] FTPS: Lade Druckdatei "${name}", versuche ${candidates.length} Pfad(e)…`);
     for (const remotePath of candidates) {
@@ -285,8 +302,84 @@ export class BambuAdapter implements Adapter {
         }
       }
     }
+    // Fallback: an keinem festen Pfad gefunden → SD-Karte rekursiv durchsuchen.
+    // Greift v. a. bei Drucken, die direkt am Drucker von der SD gestartet wurden
+    // (MQTT meldet dann den Originalnamen mit Leerzeichen, Datei liegt in einem
+    // eigenen Ordner statt in /cache/; gcode_file zeigt auf /data/… = interner
+    // Speicher, per FTPS nicht erreichbar → wir müssen die SD selbst absuchen).
+    console.log(`[bambu] FTPS: "${name}" an festen Pfaden nicht gefunden – durchsuche SD-Karte rekursiv…`);
+    const hit = await this.searchSdForFile(name);
+    if (hit) {
+      const weights: FilamentWeight[] = parseFileBuffer(hit.path, hit.buf);
+      this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights };
+      console.log(`[bambu] Druckdatei via SD-Suche geladen: ${hit.path} → ${weights.length} Filament(e) geparst`);
+      addEvent(this.printerId, 'success', `Druckdatei geladen (SD-Suche): ${hit.path.split('/').pop()} (${weights.length} Slot(s))`);
+      return;
+    }
+
     console.warn(`[bambu] Druckdatei nicht via FTPS abrufbar: ${filename}`);
     addEvent(this.printerId, 'warn', `Druckdatei nicht via FTPS gefunden: ${filename}`);
+  }
+
+  /**
+   * Durchsucht die SD-Karte (FTPS-Wurzel) rekursiv nach einer Druckdatei, deren
+   * Name zu `name` passt (Leerzeichen/Unterstriche gleichgesetzt) und auf
+   * `.gcode.3mf`/`.3mf` endet. Eine einzige FTPS-Verbindung für den ganzen Lauf;
+   * Tiefe + Rausch-Ordner begrenzt, damit grosse SD-Karten nicht ausufern.
+   */
+  private async searchSdForFile(name: string): Promise<{ path: string; buf: Buffer } | null> {
+    const ftp = new FTPClient();
+    ftp.ftp.verbose = false;
+    try {
+      await ftp.access({
+        host: this.ip,
+        port: 990,
+        user: 'bblp',
+        password: this.accessCode,
+        secure: 'implicit',
+        secureOptions: { rejectUnauthorized: false },
+      });
+      const target = normalizeName(name);
+      const match = await this.walkSd(ftp, '/', target, 0);
+      if (!match) { ftp.close(); return null; }
+      const writable = new BufferWritable();
+      await ftp.downloadTo(writable, match);
+      ftp.close();
+      return { path: match, buf: writable.getBuffer() };
+    } catch (err: unknown) {
+      ftp.close();
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[bambu] FTPS-SD-Suche fehlgeschlagen: ${msg}`);
+      return null;
+    }
+  }
+
+  private async walkSd(ftp: FTPClient, dir: string, target: string, depth: number): Promise<string | null> {
+    const MAX_DEPTH = 3;
+    const SKIP_DIRS = new Set(['timelapse', 'ipcam', 'logger', 'log']);
+    let entries: FileInfo[];
+    try {
+      entries = await ftp.list(dir);
+    } catch {
+      return null;
+    }
+    // Erst Dateien im aktuellen Ordner prüfen…
+    for (const e of entries) {
+      if (!e.isFile) continue;
+      const lower = e.name.toLowerCase();
+      if (!lower.endsWith('.gcode.3mf') && !lower.endsWith('.3mf')) continue;
+      const base = e.name.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '');
+      if (normalizeName(base) === target) return joinPath(dir, e.name);
+    }
+    // …dann Unterordner (bis MAX_DEPTH, Rausch-Ordner überspringen).
+    if (depth >= MAX_DEPTH) return null;
+    for (const e of entries) {
+      if (!e.isDirectory || e.name.startsWith('.')) continue;
+      if (SKIP_DIRS.has(e.name.toLowerCase())) continue;
+      const found = await this.walkSd(ftp, joinPath(dir, e.name), target, depth + 1);
+      if (found) return found;
+    }
+    return null;
   }
 
   async getSnapshot(): Promise<PrinterSnapshot> {
