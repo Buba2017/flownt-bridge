@@ -97,7 +97,8 @@ Environment=NODE_ENV=production"
     printf '%s\nUser=%s\n\n[Install]\nWantedBy=multi-user.target\n' "$UNIT" "$SVC_USER" \
       > /etc/systemd/system/flownt-bridge.service
     systemctl daemon-reload
-    systemctl enable --now flownt-bridge
+    systemctl enable flownt-bridge
+    systemctl restart flownt-bridge   # restart statt enable --now: startet den Dienst auch dann neu, wenn er schon lief (Update-Fall) → neue Binary greift sofort
     say "${GREEN}✓ Autostart eingerichtet${NC} (systemd System-Service als '$SVC_USER')"
     RUN_HINT="sudo systemctl stop flownt-bridge"
     LOG_HINT="journalctl -fu flownt-bridge"
@@ -107,7 +108,8 @@ Environment=NODE_ENV=production"
     printf '%s\n\n[Install]\nWantedBy=default.target\n' "$UNIT" \
       > "$HOME/.config/systemd/user/flownt-bridge.service"
     systemctl --user daemon-reload
-    systemctl --user enable --now flownt-bridge
+    systemctl --user enable flownt-bridge
+    systemctl --user restart flownt-bridge   # restart statt enable --now: greift auch bei bereits laufendem Dienst (Update-Fall)
     loginctl enable-linger "$USER" 2>/dev/null || true   # auch ohne aktive Anmeldung laufen lassen
     say "${GREEN}✓ Autostart eingerichtet${NC} (systemd User-Service)"
     RUN_HINT="systemctl --user stop flownt-bridge"

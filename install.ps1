@@ -15,6 +15,11 @@ $url   = "https://github.com/$repo/releases/latest/download/$asset"
 Write-Host "`n=== Flownt Bridge Installer ===`n" -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
+# Laufende Instanz beenden, bevor wir die .exe ueberschreiben — sonst sperrt Windows
+# die Datei (Download schlaegt fehl) bzw. es liefe danach eine zweite Instanz (Update-Fall).
+Get-Process -Name 'flownt-bridge' -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Milliseconds 500
+
 Write-Host "Lade $asset ..."
 try {
   Invoke-WebRequest -Uri $url -OutFile $bin -UseBasicParsing
