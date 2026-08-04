@@ -47,7 +47,8 @@ interface Tr {
   printing: string; idle: string; error: string; offline: string;
   paused: string; lastUpdate: string; noEvents: string; events: string;
   bed: string; tokenRequired: string; bambuFieldsRequired: string;
-  moonrakerUrlRequired: string; nameRequired: string; confirmDelete: string;
+  moonrakerUrlRequired: string; prusaFieldsRequired: string; prusaApiKeyHint: string;
+  nameRequired: string; confirmDelete: string;
   smartPlug: string; smartPlugIp: string; smartPlugHint: string;
   roleQ: string; roleHint: string; roleMonitor: string; roleMonitorD: string;
   roleLabel: string; roleLabelD: string; roleBoth: string; roleBothD: string;
@@ -98,6 +99,8 @@ const T: Record<BridgeLang, Tr> = {
     tokenRequired: 'Bitte Auth-Token eingeben.',
     bambuFieldsRequired: 'Bitte IP-Adresse, Seriennummer und Access Code eingeben.',
     moonrakerUrlRequired: 'Bitte Drucker-URL eingeben.',
+    prusaFieldsRequired: 'Bitte Drucker-URL und API Key eingeben.',
+    prusaApiKeyHint: 'IP und API Key findest du am Drucker-Display unter Einstellungen → Netzwerk → PrusaLink.',
     nameRequired: 'Bitte einen Namen eingeben.',
     confirmDelete: 'Drucker wirklich löschen?',
     smartPlug: 'Smart-Plug / Strommessung (optional)',
@@ -161,6 +164,8 @@ const T: Record<BridgeLang, Tr> = {
     tokenRequired: 'Please enter the auth token.',
     bambuFieldsRequired: 'Please fill in IP address, serial number and access code.',
     moonrakerUrlRequired: 'Please enter the printer URL.',
+    prusaFieldsRequired: 'Please enter the printer URL and API key.',
+    prusaApiKeyHint: 'Find IP and API key on the printer display under Settings → Network → PrusaLink.',
     nameRequired: 'Please enter a name.',
     confirmDelete: 'Really delete this printer?',
     smartPlug: 'Smart plug / power metering (optional)',
@@ -223,7 +228,7 @@ function html(title: string, body: string, autoRefresh = false): string {
   .green { background: #10b981; } .gray { background: #444; } .red { background: #ef4444; } .yellow { background: #f59e0b; }
   .row { display: flex; gap: 1rem; }
   .row > div { flex: 1; }
-  #adapter-bambu, #adapter-moonraker { display: none; }
+  #adapter-bambu, #adapter-moonraker, #adapter-prusa { display: none; }
   .printer-header { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 1rem; }
   .printer-name { font-size: 0.95rem; font-weight: 700; flex: 1; }
   .stat-box { background: #111; border-radius: 10px; padding: 0.875rem; margin-bottom: 0.75rem; }
@@ -375,7 +380,7 @@ function statusPage(): string {
       ? state.lastPushAt.toLocaleTimeString(cfg.language === 'de' ? 'de-DE' : 'en-GB')
       : '–';
 
-    const adapterLabel = printer.adapterType === 'bambu' ? 'Bambu Lab' : 'Moonraker';
+    const adapterLabel = printer.adapterType === 'bambu' ? 'Bambu Lab' : printer.adapterType === 'prusa' ? 'Prusa Link' : 'Moonraker';
 
     // ETA
     let etaStr = '';
@@ -482,7 +487,7 @@ function setupListPage(): string {
   const rows = cfg.printers.length === 0
     ? `<div class="empty">${t.noPrinters}</div>`
     : cfg.printers.map(p => {
-        const adapterLabel = p.adapterType === 'bambu' ? 'Bambu Lab' : 'Moonraker';
+        const adapterLabel = p.adapterType === 'bambu' ? 'Bambu Lab' : p.adapterType === 'prusa' ? 'Prusa Link' : 'Moonraker';
         const state = printerStates.get(p.id);
         const dotClass = !state?.running ? 'gray' : state.snapshot?.status === 'printing' ? 'green' : 'green';
         return `<div class="list-row">
@@ -550,8 +555,9 @@ function printerFormPage(printer?: PrinterConfig, error?: string): string {
 
     <label>${t.printerType}</label>
     <select name="adapterType" id="adapterTypeSelect" onchange="switchAdapter(this.value)">
-      <option value="bambu"      ${isBambu  ? 'selected' : ''}>Bambu Lab (X1, P1, A1, H2D, …)</option>
-      <option value="moonraker"  ${!isBambu ? 'selected' : ''}>Moonraker / Klipper</option>
+      <option value="bambu"      ${isBambu ? 'selected' : ''}>Bambu Lab (X1, P1, A1, H2D, …)</option>
+      <option value="moonraker"  ${printer?.adapterType === 'moonraker' ? 'selected' : ''}>Moonraker / Klipper</option>
+      <option value="prusa"      ${printer?.adapterType === 'prusa' ? 'selected' : ''}>Prusa Link (MK4, XL, MINI, Core One)</option>
     </select>
 
     <div id="adapter-bambu">
@@ -578,6 +584,14 @@ function printerFormPage(printer?: PrinterConfig, error?: string): string {
       <input name="moonrakerKey" type="password" value="${printer?.adapterType === 'moonraker' ? printer.adapterApiKey : ''}"/>
     </div>
 
+    <div id="adapter-prusa">
+      <label>${t.printerUrl}</label>
+      <input name="prusaUrl" placeholder="http://192.168.1.100" value="${printer?.adapterType === 'prusa' ? printer.adapterUrl : ''}"/>
+      <label>${t.apiKey}</label>
+      <input name="prusaKey" type="password" value="${printer?.adapterType === 'prusa' ? printer.adapterApiKey : ''}"/>
+      <p class="hint">${t.prusaApiKeyHint}</p>
+    </div>
+
     <hr class="sep"/>
     <div class="section-label" style="margin-bottom:0.625rem;">${t.smartPlug}</div>
     <label>${t.smartPlugIp}</label>
@@ -591,6 +605,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string): string {
   function switchAdapter(val) {
     document.getElementById('adapter-bambu').style.display     = val === 'bambu'      ? 'block' : 'none';
     document.getElementById('adapter-moonraker').style.display = val === 'moonraker'  ? 'block' : 'none';
+    document.getElementById('adapter-prusa').style.display     = val === 'prusa'      ? 'block' : 'none';
   }
   switchAdapter(document.getElementById('adapterTypeSelect').value);
 </script>`);
@@ -603,13 +618,16 @@ function parseForm(
   id: string,
 ): { cfg: PrinterConfig | null; error?: string } {
   const t = tr();
-  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
+  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
   if (!name?.trim())   return { cfg: null, error: t.nameRequired };
   if (!token?.trim())  return { cfg: null, error: t.tokenRequired };
   const isBambu = adapterType === 'bambu';
+  const isPrusa = adapterType === 'prusa';
   if (isBambu  && (!bambuUrl?.trim() || !bambuSerial?.trim() || !bambuCode?.trim()))
     return { cfg: null, error: t.bambuFieldsRequired };
-  if (!isBambu && !moonrakerUrl?.trim())
+  if (isPrusa  && (!prusaUrl?.trim() || !prusaKey?.trim()))
+    return { cfg: null, error: t.prusaFieldsRequired };
+  if (!isBambu && !isPrusa && !moonrakerUrl?.trim())
     return { cfg: null, error: t.moonrakerUrlRequired };
 
   return {
@@ -617,9 +635,9 @@ function parseForm(
       id,
       name:              name.trim(),
       flowntAuthToken:   token.trim(),
-      adapterType:       isBambu ? 'bambu' : 'moonraker',
-      adapterUrl:        isBambu ? bambuUrl.trim() : moonrakerUrl.trim(),
-      adapterApiKey:     isBambu ? bambuCode.trim() : (moonrakerKey ?? '').trim(),
+      adapterType:       isBambu ? 'bambu' : isPrusa ? 'prusa' : 'moonraker',
+      adapterUrl:        isBambu ? bambuUrl.trim() : isPrusa ? prusaUrl.trim() : moonrakerUrl.trim(),
+      adapterApiKey:     isBambu ? bambuCode.trim() : isPrusa ? prusaKey.trim() : (moonrakerKey ?? '').trim(),
       adapterSerial:     isBambu ? bambuSerial.trim() : '',
       pollingIntervalMs: 30_000,
       ...(isBambu && bambuCloudEmail?.trim()    ? { bambuCloudEmail:    bambuCloudEmail.trim()    } : {}),

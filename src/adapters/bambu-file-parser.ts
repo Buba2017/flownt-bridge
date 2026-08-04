@@ -13,7 +13,21 @@ export function parseFileBuffer(filename: string, buffer: Buffer): FilamentWeigh
   if (base.endsWith('.gcode') || base.endsWith('.gco') || base.endsWith('.g')) {
     return parseGcode(buffer.toString('utf-8'));
   }
+  if (base.endsWith('.bgcode') || base.endsWith('.bgc')) return parseBgcode(buffer);
   return [];
+}
+
+// Prusa Binary G-Code (.bgcode): Best-Effort ohne echten Block-Parser. Die Print-Metadaten
+// stehen als ASCII-`key=value`-Paare (ohne `;`-Präfix) im Binärstrom, sofern der Block
+// unkomprimiert ist (PrusaSlicer-Default). Bei komprimierten Metadaten liefert der Scan
+// nichts → Druck wird ohne Gewichte geloggt.
+function parseBgcode(buffer: Buffer): FilamentWeight[] {
+  const text = buffer.toString('latin1');
+  const m = text.match(/filament used \[g\]\s*=\s*([\d.]+(?:\s*,\s*[\d.]+)*)/i);
+  if (!m) return [];
+  return m[1].split(',')
+    .map((s, i) => ({ filamentIndex: i, grams: round2(parseFloat(s.trim())) }))
+    .filter(fw => !isNaN(fw.grams) && fw.grams > 0);
 }
 
 function parse3mf(buffer: Buffer): FilamentWeight[] {
