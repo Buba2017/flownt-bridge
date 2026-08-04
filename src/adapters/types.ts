@@ -1,19 +1,8 @@
-export interface AmsSlot {
-  ams_unit: number;    // 0–3 (für daisy-chained AMS)
-  slot: number;        // 0–3
-  material: string;    // "PLA", "PETG", …
-  color: string;       // "#FF6600" (normalisiert von Bambu "0xFFAA00")
-  remain: number;      // 0–100 %
-  tray_weight: number; // Gesamtgewicht der Spule in g (für optionale Gramm-Schätzung)
-}
-
-export interface AmsHumidityUnit {
-  ams_unit: number; // 0–3
-  humidity: number; // 1–5 (Bambu-Skala: 1=trocken, 5=sehr feucht)
-  temp: number;     // °C
-}
-
-export type PrinterStatus = 'idle' | 'printing' | 'paused' | 'error' | 'offline';
+// AmsSlot, AmsHumidityUnit und PrinterStatus leben jetzt im geteilten Contract
+// (contract.ts, generiert aus supabase/functions/_shared/contract.ts im Haupt-Repo).
+// Re-Export, damit bestehende Importe aus adapters/types.js weiter funktionieren.
+export type { AmsSlot, AmsHumidityUnit, PrinterStatus } from '../contract.js';
+import type { AmsSlot, AmsHumidityUnit, PrinterStatus } from '../contract.js';
 
 // Normalisierter Job-Ausgang (Stufe C). Vom Adapter beim Terminal-Zustand gesetzt; sonst null.
 // completed = sauber beendet · aborted = abgebrochen (User-Stop/Cancel) · failed = Fehler.

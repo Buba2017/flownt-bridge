@@ -1,17 +1,55 @@
+// AUTO-GENERIERT aus supabase/functions/_shared/contract.ts — NICHT editieren!
+// Änderungen in der kanonischen Quelle machen, dann: npm run sync:contract
 // ── Bridge → Flownt: Event-/Ingest-Vertrag (Single Source of Truth) ──────────────
 //
-// Stufe A (rein additiv): Dieses Modul verankert die HEUTE bereits gesendete Form als
-// typisierten Vertrag — es ersetzt das frühere `Record<string, unknown>` in bridge.ts,
-// ohne Felder, Werte oder Verhalten zu ändern. Beide Adapter (Bambu, Moonraker) liefern
-// `PrinterSnapshot` (adapters/types.ts); die kanonische Event-Ableitung passiert zentral
-// in bridge.ts und wird über diesen Vertrag an `bridge-ingest` (Backend) gesendet.
+// KANONISCHE QUELLE: supabase/functions/_shared/contract.ts
+// Konsumenten:
+//   - Backend  : supabase/functions/bridge-ingest/index.ts (direkter Import)
+//   - Frontend : src/App.tsx, src/components/* (direkter `import type`)
+//   - Bridge   : bridge/src/contract.ts — GENERIERTE KOPIE (eigenes Repo, daher kein
+//                direkter Import). Nach Änderungen hier: `npm run sync:contract`;
+//                Drift wird von `npm run check:contract` erkannt.
 //
-// Spätere Stufen: B abstrahiert die Slot-/Spulen-Identität (AMS heute → NFC später) als
-// eigenes `MaterialLine`-Modell; C bringt Moonraker auf Parität (job_failed, Slot-Ref).
-import type { AmsSlot, AmsHumidityUnit, PrinterStatus } from './adapters/types.js';
+// Diese Datei ist bewusst selbst-enthaltend (keine Imports), damit sie unverändert in
+// Deno (Edge Function), Node ESM (Bridge) und Vite (Frontend) funktioniert.
+//
+// Stufen-Historie: Stufe A verankerte die gesendete Form als typisierten Vertrag;
+// Stufe B abstrahierte die Slot-/Spulen-Identität (`MaterialLine`/`SlotRef`);
+// C bringt Moonraker auf Parität (job_failed, Slot-Ref).
 
 /** Kanonische Event-Typen, die die Bridge an Flownt sendet. */
 export type EventType = 'heartbeat' | 'status_update' | 'job_complete' | 'job_failed';
+
+/**
+ * Drucker-Status auf Adapter-/Snapshot-Ebene. Hinweis zur Wire-Ebene: die Bridge mappt
+ * `paused` → `printing` vor dem Senden; `bridge-ingest` akzeptiert stattdessen zusätzlich
+ * das nutzergesetzte `maintenance` (siehe INGEST_ACCEPTED_STATUSES).
+ */
+export type PrinterStatus = 'idle' | 'printing' | 'paused' | 'error' | 'offline';
+
+/**
+ * Von `bridge-ingest` akzeptierte Werte für `printer_status` auf dem Wire.
+ * Bewusst als `readonly string[]` typisiert, damit der Check gegen beliebige
+ * Status-Strings (inkl. dem nie gesendeten `paused`) kompiliert.
+ */
+export const INGEST_ACCEPTED_STATUSES: readonly string[] = ['idle', 'printing', 'maintenance', 'offline', 'error'];
+
+/** Ein AMS-Slot im Live-Zustand (Element von `ams_state` / `printers.live_ams_state`). */
+export interface AmsSlot {
+  ams_unit: number;    // 0–3 (für daisy-chained AMS)
+  slot: number;        // 0–3
+  material: string;    // "PLA", "PETG", …
+  color: string;       // "#FF6600" (normalisiert von Bambu "0xFFAA00")
+  remain: number;      // 0–100 %
+  tray_weight: number; // Gesamtgewicht der Spule in g (für optionale Gramm-Schätzung)
+}
+
+/** Luftfeuchte je AMS-Einheit (Element von `ams_humidity` / `printers.live_ams_humidity`). */
+export interface AmsHumidityUnit {
+  ams_unit: number; // 0–3
+  humidity: number; // 1–5 (Bambu-Skala: 1=trocken, 5=sehr feucht)
+  temp: number;     // °C
+}
 
 /**
  * Quell-abstrahierte Slot-/Lagerplatz-Referenz (Stufe B).
