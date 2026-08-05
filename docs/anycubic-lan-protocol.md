@@ -169,3 +169,7 @@ aber bewusst NICHT implementiert.
 3. Multi-Color (ACE): Sind per-Slot-Gramm verfügbar oder nur Gesamtverbrauch + Slot-Prozente?
 4. Exakte `state`-Strings am Terminal-Übergang (finished vs. done etc.) am echten Druckende mitschneiden.
 5. Kobra X vs. S1: identische Payloads? (Erwartung ja — bitte beide Captures vergleichen.)
+
+## 8. Beobachtetes Verhalten beim Testen (2026-08)
+
+- **LAN-Modus-Toggle stört die Slicer-Fernsteuerung (Anycubic-seitig, nicht unser Tool):** Beim ersten Tester (2026-08-06) verschwand der Drucker nach dem Aktivieren des LAN-Modus aus der Fernsteuerung von Anycubic Slicer Next; ein Deaktivieren half nicht, **ein Power-Cycle des Druckers schon**. Ursache liegt in Anycubics Cloud-/Slicer-Binding beim Moduswechsel, nicht im read-only Probe-Tool (nur `query`/`getInfo`, keine Steuer-/Bind-/Schreibbefehle, Verbindung nur solange das Tool läuft). Konsequenz für den Adapter/das Onboarding: Nutzer vorab darauf hinweisen (Neustart des Druckers als Recovery), und die mögliche „ein aktiver Controller pro Gerät"-Regel des Brokers im Hinterkopf behalten (→ eindeutige, kurzlebige Client-ID; nicht dauerhaft parallel zum Slicer verbinden, solange nicht geklärt).
