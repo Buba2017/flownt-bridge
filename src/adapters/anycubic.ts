@@ -64,8 +64,11 @@ export class AnycubicAdapter implements Adapter {
   private client: mqtt.MqttClient | null = null;
   private queryTimer: ReturnType<typeof setInterval> | null = null;
   private snapshot: PrinterSnapshot = { status: 'offline' };
-  // Letzte Roh-Reports je Typ (Reports kommen getrennt; Snapshot wird aus allen zusammengesetzt).
+  // Letzte Roh-Reports je Typ (msg.data). Reports kommen getrennt; Snapshot wird zusammengesetzt.
   private reports: Record<string, Record<string, unknown>> = {};
+  // Envelope-State je Typ (msg.state) — der Drucker-/Job-Status liegt auf dem Envelope,
+  // nicht unter msg.data (bei 'status' ist msg.data sogar null). Bestätigt an S1-Capture.
+  private envState: Record<string, string> = {};
 
   constructor(host: string, printerId = '') {
     this.host = host.replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -144,30 +147,40 @@ export class AnycubicAdapter implements Adapter {
   }
 
   private onMessage(topic: string, payload: Buffer): void {
+    // Query-Bestätigungen (.../response, Payload nur {msgid}) tragen keine Nutzdaten.
+    if (topic.endsWith('/response')) return;
     let msg: Record<string, unknown>;
     try { msg = JSON.parse(payload.toString()); } catch { return; }
-    const type = (typeof msg.type === 'string' ? msg.type : topic.split('/').slice(-2)[0]);
-    const data = (msg.data ?? {}) as Record<string, unknown>;
-    this.reports[type] = data;
+    // Typ steht im Envelope; NICHT aus dem Topic ableiten (dort steht die device_id).
+    const type = typeof msg.type === 'string' ? msg.type : '';
+    if (!type) return;
+    // Envelope trägt state (Drucker-/Job-Status); die eigentlichen Felder liegen unter msg.data.
+    if (typeof msg.state === 'string') this.envState[type] = msg.state;
+    this.reports[type] = (msg.data ?? {}) as Record<string, unknown>;
     this.rebuildSnapshot();
   }
 
   // Setzt den Snapshot aus den zuletzt empfangenen Reports zusammen.
+  // Bestätigt am S1-Capture (idle): tempature-Feldnamen, Envelope-state, /response-ACKs.
+  // TODO(hw): NOCH OFFEN bis zu einer Capture WÄHREND eines Drucks — Live-Druckstatus-Quelle
+  // (Erwartung: envState['status'] → 'printing'), Terminal-Strings (finished/stopped/failed),
+  // Job-Felder (progress/remain_time/filename) und Gramm (estimate_supplies_usage_g).
   private rebuildSnapshot(): void {
     const info = this.reports['info'] ?? {};
-    const status = this.reports['status'] ?? {};
     const temp = this.reports['tempature'] ?? {};
-    // Job bevorzugt aus info.project, sonst aus print-Report.
-    const project = ((info.project ?? this.reports['print']) ?? {}) as Record<string, unknown>;
-
-    const stateStr = String(project.state ?? status.state ?? info.state ?? '');
+    // Aktiver Job: info.data.project (im Leerlauf null → kein jobResult, kein Fehl-Abzug).
+    const project = (info.project ?? {}) as Record<string, unknown>;
+    const jobState = String(project.state ?? '');
+    // Live-Druckerstatus: aktiver Job > status-Envelope ('free' idle) > info-Envelope ('done').
+    const liveState = jobState || this.envState['status'] || this.envState['info'] || '';
     const code = typeof project.code === 'number' ? project.code : undefined;
     const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
 
-    // TODO(hw): Feldnamen (curr_nozzle_temp etc.) an echten tempature-Payloads bestätigen.
     this.snapshot = {
-      status: mapState(stateStr),
-      jobResult: mapJobResult(stateStr, code),
+      status: mapState(liveState),
+      // jobResult nur aus einem aktiven Job ableiten — nicht aus dem persistenten
+      // info-Envelope 'done' (das würde bei jedem Poll fälschlich 'completed' melden).
+      jobResult: jobState ? mapJobResult(jobState, code) : null,
       printFile: (project.filename ?? project.name) as string | undefined,
       progressPct: num(project.progress),
       etaSec: num(project.remain_time) != null ? (project.remain_time as number) * 60 : undefined,

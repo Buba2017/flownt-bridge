@@ -173,3 +173,23 @@ aber bewusst NICHT implementiert.
 ## 8. Beobachtetes Verhalten beim Testen (2026-08)
 
 - **LAN-Modus-Toggle stört die Slicer-Fernsteuerung (Anycubic-seitig, nicht unser Tool):** Beim ersten Tester (2026-08-06) verschwand der Drucker nach dem Aktivieren des LAN-Modus aus der Fernsteuerung von Anycubic Slicer Next; ein Deaktivieren half nicht, **ein Power-Cycle des Druckers schon**. Ursache liegt in Anycubics Cloud-/Slicer-Binding beim Moduswechsel, nicht im read-only Probe-Tool (nur `query`/`getInfo`, keine Steuer-/Bind-/Schreibbefehle, Verbindung nur solange das Tool läuft). Konsequenz für den Adapter/das Onboarding: Nutzer vorab darauf hinweisen (Neustart des Druckers als Recovery), und die mögliche „ein aktiver Controller pro Gerät"-Regel des Brokers im Hinterkopf behalten (→ eindeutige, kurzlebige Client-ID; nicht dauerhaft parallel zum Slicer verbinden, solange nicht geklärt).
+
+## 9. Erste echte Capture — Kobra S1, 2026-08 (494 Nachrichten, Drucker IDLE)
+
+**Modell:** `modelName="Anycubic Kobra S1"`, `typeId=20025`, `device_id=6d8abef5…` (32-hex).
+Achtung: als „Kobra X" gelabelt, aber das Gerät meldet **S1** (typeId 20025 ≠ Default 20030) — echte Kobra-X-Capture steht noch aus.
+
+**Bestätigt (der riskante Teil funktioniert):**
+- **MQTT-Connect OHNE Client-Cert** (nur `username`/`password`, `rejectUnauthorized:false`) → alle 7 Query-Typen liefern Reports. grunna-Ansatz gilt; `devicecrt`/`devicepk` nicht nötig.
+- **Envelope-Struktur:** Jede Nachricht ist `{type, action, code, state, msgid, timestamp, data:{…}}`. Der **Drucker-/Job-Status liegt im Envelope (`state`)**, nicht unter `data`. Bei `status` (`action:workReport`) ist `data:null` und nur `state` gesetzt (idle: `"free"`); `info` (`action:report`) hat `state:"done"` + volle `data`.
+- **Query-ACKs** kommen auf `.../printer/public/<typeId>/<deviceId>/response` mit Payload nur `{msgid}` → ignorieren (Topic endet auf `/response`, kein `type`).
+- **Temperatur-Felder bestätigt** (`tempature.data`): `curr_nozzle_temp`, `curr_hotbed_temp`, `target_nozzle_temp`, `target_hotbed_temp` **+ `curr/target_chamber_temp`** (S1 ist geschlossen).
+- **info.data-Keys:** `state, project, temp, urls, model, version, ip, printerName, features, last_project, print_speed_mode, fan_speed_pct, aux_fan_speed_pct, box_fan_level`.
+
+**NOCH NICHT validiert (Drucker war die ganze Zeit idle → keine Druckdaten):**
+- Kein aktiver Druck: `status.state` durchg. `"free"`, `info.state` `"done"`, `info.data.project=null`, `last_project=null`.
+- **Kein `estimate_supplies_usage_g`, kein Fortschritt/Dateiname, keine State-Übergänge** → Verbrauchsbuchung + Terminal-Erkennung weiterhin offen.
+- **`multi_color_box:[]` leer** (kein/keine ACE erkannt) → ACE-Slot-Struktur weiter offen.
+- **Nötig:** eine Capture **WÄHREND** eines echten Drucks (kurzer Druck komplett + einmal Abbruch), idealerweise mit ACE.
+
+Adapter-Korrekturen aus dieser Capture umgesetzt (`anycubic.ts`): Envelope-`state` erfasst, `/response` ignoriert, `type` nur aus Envelope, jobResult nur aus aktivem Job (nicht aus persistentem `info:"done"`).
