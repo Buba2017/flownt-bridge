@@ -1,8 +1,11 @@
 # Flownt Bridge — Event-/Daten-Vertrag (Architektur)
 
 Interne Referenz für den **normalisierten Drucker-Datenvertrag**. Ziel: jeder Plattform-Adapter
-(Bambu, Klipper/Moonraker, perspektivisch PrusaLink/OctoPrint) bildet auf **dieselbe** kanonische
-Form ab, damit Flownt darüber eine herstellerunabhängige MES-Datenschicht legen kann.
+(Bambu, Klipper/Moonraker, Prusa Link; perspektivisch Anycubic Kobra LAN, OctoPrint) bildet auf
+**dieselbe** kanonische Form ab, damit Flownt darüber eine herstellerunabhängige MES-Datenschicht
+legen kann. Der Vertrag selbst (`contract.ts`) ist eine **generierte Kopie** aus dem Haupt-Repo
+(`supabase/functions/_shared/contract.ts`) — nie hier von Hand editieren; Sync via
+`npm run sync:contract` im Haupt-Repo.
 
 ## Architekturmodell: Snapshot-Polling, zentrale Event-Ableitung
 
@@ -47,13 +50,17 @@ sie stecken in `status_update` + `printer_status`; das Spulen-Matching passiert 
 
 ## Adapter-Spezifika
 
-| Aspekt | Bambu (`bambu.ts`) | Moonraker (`moonraker.ts`) |
-|---|---|---|
-| Transport | MQTT 8883 + FTPS 990 | HTTP (`/printer/objects/query`, `/server/files/gcodes`) |
-| Status | `gcode_state` → `mapState` | `print_stats.state` → `mapState` |
-| `jobResult` | `FINISH→completed`, `FAILED→failed` (Stop meldet FAILED) | `complete→completed`, `cancelled→aborted`, `error→failed` |
-| Slot-Identität | AMS (ams_mapping/aktiver Slot/Farbe) → `source:'ams'` | Slicer-Reihenfolge → `source:'slicer_order'`; Lagerort via „Material-Slots" in der App |
-| Befehle | Pause/Resume/Stop | — |
+| Aspekt | Bambu (`bambu.ts`) | Moonraker (`moonraker.ts`) | Prusa Link (`prusa.ts`) |
+|---|---|---|---|
+| Transport | MQTT 8883 + FTPS 990 | HTTP (`/printer/objects/query`, `/server/files/gcodes`) | HTTP (`/api/v1/status`, `/api/v1/job`, X-Api-Key) |
+| Status | `gcode_state` → `mapState` | `print_stats.state` → `mapState` | `printer.state` → `mapState` (ATTENTION+Job = paused) |
+| `jobResult` | `FINISH→completed`, `FAILED→failed` (Stop meldet FAILED) | `complete→completed`, `cancelled→aborted`, `error→failed` | `FINISHED→completed`, `STOPPED→aborted`, `ERROR→failed` |
+| Slot-Identität | AMS (ams_mapping/aktiver Slot/Farbe) → `source:'ams'` | Slicer-Reihenfolge → `source:'slicer_order'`; Lagerort via „Material-Slots" in der App | wie Moonraker (Material-Slots) |
+| Befehle | Pause/Resume/Stop | — | — |
+
+Datei-Parser `bambu-file-parser.ts` versteht `.3mf` / `.gcode` / `.bgcode` (Prusa Binary, Best-Effort).
+
+**Spike (Branch `spike/anycubic-lan`, nicht in `main`):** `anycubic.ts` — Anycubic Kobra LAN (MQTT 9883/TLS, Credential-Discovery HTTP 18910 + AES). Verbrauch kommt in Gramm direkt aus dem Report (kein Datei-Parsing). Unvalidiert; Protokoll-Doku `docs/anycubic-lan-protocol.md`.
 
 ## Stand (Audit, 2026-06-16) — „verankert & konform" für Vertrag + Moonraker-Datenpfad
 
