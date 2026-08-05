@@ -1,36 +1,33 @@
-// Anycubic Kobra LAN-Probe (Spike) — validiert das reverse-engineerte LAN-Protokoll
-// gegen echte Hardware und schneidet reale Report-Payloads mit.
+// Flownt Anycubic-Test (Spike) — für Laien-Tester als Doppelklick-Programm gedacht.
+// Validiert das reverse-engineerte Anycubic-LAN-Protokoll gegen echte Hardware und
+// schneidet reale Report-Payloads mit, damit der Adapter darauf abgestimmt werden kann.
 //
-//   node scripts/anycubic-probe.mjs <drucker-ip> [sekunden]
+// Nutzung als Binary:  einfach starten → nach Drucker-IP gefragt werden → Test-Druck
+//                      machen → Fenster schließen (Strg+C). Die Capture-Datei liegt
+//                      danach im Home-Ordner und wird zurückgeschickt.
+// Nutzung als Skript:  node scripts/anycubic-probe.mjs [drucker-ip]
 //
-// Ablauf: Credential-Discovery (HTTP 18910 + AES) → MQTT 9883 (TLS) → alle Reports
-// abfragen → eintreffende Payloads sammeln und (redigiert) nach anycubic-capture-<ts>.json
-// schreiben. Read-only: es werden nur Query-Nachrichten gesendet, keine Steuerbefehle.
-//
-// Braucht Node 18+ (globales fetch/crypto) und das `mqtt`-Paket (bereits Bridge-Dep).
-// Aus dem bridge/-Ordner ausführen, damit `mqtt` auflösbar ist.
+// Read-only: es werden nur Abfragen gesendet, keine Steuerbefehle. Die Capture-Datei
+// ist redigiert (keine Zugangsdaten, keine Kamera-/Stream-URLs).
 import crypto from 'node:crypto';
 import { writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import readline from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
 import mqtt from 'mqtt';
-
-const HOST = process.argv[2];
-const DURATION_S = Number(process.argv[3] || 90);
-if (!HOST) {
-  console.error('Aufruf: node scripts/anycubic-probe.mjs <drucker-ip> [sekunden]');
-  process.exit(1);
-}
 
 const CTRL_PORT = 18910;
 const MQTT_PORT_FALLBACK = 9883;
 const QUERY_TYPES = ['status', 'info', 'tempature', 'fan', 'light', 'peripherie', 'multiColorBox'];
 const SENSITIVE = new Set(['username', 'password', 'devicecrt', 'devicepk', 'token', 'broker',
   'rtspUrl', 'fileUploadUrl', 'fileUploadurl', 'url', 'streamUrl', 'videoUrl', 'flvUrl']);
+const OUT_FILE = join(homedir(), `flownt-anycubic-capture-${Date.now()}.json`);
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const nonce = (n) => Array.from({ length: n }, () =>
   'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[crypto.randomInt(62)]).join('');
 
-// Redigiert Geheimnisse rekursiv, damit das Capture gefahrlos geteilt werden kann.
 function redact(v) {
   if (Array.isArray(v)) return v.map(redact);
   if (v && typeof v === 'object') {
@@ -41,101 +38,103 @@ function redact(v) {
   return v;
 }
 
-async function discoverCredentials() {
-  console.log(`[probe] GET http://${HOST}:${CTRL_PORT}/info …`);
-  const info = await fetch(`http://${HOST}:${CTRL_PORT}/info`, { signal: AbortSignal.timeout(10_000) })
-    .then(r => r.json());
-  const token = info.token;
-  const ctrlUrl = info.ctrlInfoUrl;
-  if (!token || token.length < 32 || !ctrlUrl) {
-    throw new Error(`/info unvollständig — token(${token?.length}) / ctrlInfoUrl(${!!ctrlUrl}). Ist LAN-Modus am Drucker aktiv?`);
-  }
-  console.log(`[probe] /info ok — modelName=${info.modelName} modelId=${info.modelId ?? info.modeId}`);
-
-  const ts = String(Date.now());
-  const n = nonce(6);
-  const sign = md5(md5(token.slice(0, 16)) + ts + n);
-  const did = crypto.randomBytes(16).toString('hex').toUpperCase();
-  const url = `${ctrlUrl}?ts=${ts}&nonce=${n}&sign=${sign}&did=${did}`;
-  console.log(`[probe] POST ${ctrlUrl} …`);
-  const ctrl = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(10_000) }).then(r => r.json());
-  if (ctrl.code !== 200) throw new Error(`ctrlInfo code=${ctrl.code} (${ctrl.msg ?? 'kein msg'})`);
-
-  const key = token.slice(16, 32);
-  const iv = ctrl.data.token;
-  const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(key, 'utf8'), Buffer.from(iv, 'utf8'));
-  const plain = Buffer.concat([decipher.update(Buffer.from(ctrl.data.info, 'base64')), decipher.final()]);
-  const bundle = JSON.parse(plain.toString('utf8'));
-  console.log(`[probe] Credentials entschlüsselt — deviceId=${bundle.deviceId} modeId=${bundle.modeId ?? bundle.modelId}`);
-  return bundle;
+async function askIp() {
+  const rl = readline.createInterface({ input: stdin, output: stdout });
+  try {
+    let ip = '';
+    while (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+      ip = (await rl.question('\n  IP-Adresse des Anycubic-Druckers (z. B. 192.168.1.50): ')).trim();
+      if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) console.log('  ⚠  Das sieht nicht nach einer IP-Adresse aus. Bitte erneut.');
+    }
+    return ip;
+  } finally { rl.close(); }
 }
 
-function run(bundle) {
+async function discoverCredentials(host) {
+  console.log(`\n  [1/3] Verbinde mit dem Drucker (http://${host}:${CTRL_PORT}) …`);
+  const info = await fetch(`http://${host}:${CTRL_PORT}/info`, { signal: AbortSignal.timeout(10_000) }).then(r => r.json());
+  if (!info.token || info.token.length < 32 || !info.ctrlInfoUrl) {
+    throw new Error('Drucker antwortet, aber der LAN-Modus scheint nicht aktiv zu sein. Bitte am Drucker-Display den LAN-Modus einschalten.');
+  }
+  console.log(`  [2/3] Hole Zugangsdaten (Modell: ${info.modelName ?? 'unbekannt'}) …`);
+  const ts = String(Date.now());
+  const n = nonce(6);
+  const sign = md5(md5(info.token.slice(0, 16)) + ts + n);
+  const did = crypto.randomBytes(16).toString('hex').toUpperCase();
+  const ctrl = await fetch(`${info.ctrlInfoUrl}?ts=${ts}&nonce=${n}&sign=${sign}&did=${did}`,
+    { method: 'POST', signal: AbortSignal.timeout(10_000) }).then(r => r.json());
+  if (ctrl.code !== 200) throw new Error(`Drucker lehnte die Anfrage ab (Code ${ctrl.code}).`);
+  const decipher = crypto.createDecipheriv('aes-128-cbc',
+    Buffer.from(info.token.slice(16, 32), 'utf8'), Buffer.from(ctrl.data.token, 'utf8'));
+  const plain = Buffer.concat([decipher.update(Buffer.from(ctrl.data.info, 'base64')), decipher.final()]);
+  return JSON.parse(plain.toString('utf8'));
+}
+
+function run(host, bundle) {
   const typeId = String(bundle.modeId ?? bundle.modelId);
   const deviceId = bundle.deviceId;
-  let host = HOST, port = MQTT_PORT_FALLBACK;
-  try { const u = new URL(bundle.broker); host = u.hostname || HOST; port = Number(u.port) || MQTT_PORT_FALLBACK; } catch { /* Fallback */ }
+  let mqttHost = host, port = MQTT_PORT_FALLBACK;
+  try { const u = new URL(bundle.broker); mqttHost = u.hostname || host; port = Number(u.port) || MQTT_PORT_FALLBACK; } catch { /* Fallback */ }
 
   const base = `anycubic/anycubicCloud/v1/web/printer/${typeId}/${deviceId}`;
   const subTopic = `anycubic/anycubicCloud/v1/printer/+/${typeId}/${deviceId}/#`;
   const captures = [];
+  const save = () => writeFileSync(OUT_FILE, JSON.stringify({
+    probedHost: host, modelName: bundle.modelName, typeId,
+    seenTypes: [...new Set(captures.map(c => c.type))], count: captures.length, captures,
+  }, null, 2));
 
-  console.log(`[probe] MQTT connect mqtts://${host}:${port} (ohne Client-Cert) …`);
-  const client = mqtt.connect(`mqtts://${host}:${port}`, {
-    username: bundle.username,
-    password: bundle.password,
-    rejectUnauthorized: false,
-    protocolVersion: 4,
-    keepalive: 60,
+  console.log('  [3/3] Verbinde mit dem Drucker-Datenkanal …');
+  const client = mqtt.connect(`mqtts://${mqttHost}:${port}`, {
+    username: bundle.username, password: bundle.password,
+    rejectUnauthorized: false, protocolVersion: 4, keepalive: 60,
     clientId: `flownt_anycubic_${crypto.randomBytes(4).toString('hex')}`,
-    connectTimeout: 10_000,
-    reconnectPeriod: 0,
+    connectTimeout: 10_000, reconnectPeriod: 5_000,
   });
 
-  const queryAll = () => {
-    for (const type of QUERY_TYPES) {
-      client.publish(`${base}/${type}`, JSON.stringify({
-        type, action: type === 'multiColorBox' ? 'getInfo' : 'query',
-        timestamp: Date.now(), msgid: crypto.randomUUID(), data: null,
-      }));
-    }
-  };
+  const queryAll = () => { for (const type of QUERY_TYPES) client.publish(`${base}/${type}`,
+    JSON.stringify({ type, action: type === 'multiColorBox' ? 'getInfo' : 'query', timestamp: Date.now(), msgid: crypto.randomUUID(), data: null })); };
 
   client.on('connect', () => {
-    console.log('[probe] MQTT verbunden ✓');
     client.subscribe(subTopic, err => {
-      if (err) { console.error('[probe] Subscribe-Fehler:', err.message); process.exit(1); }
-      console.log(`[probe] subscribed: ${subTopic}`);
+      if (err) { console.error('  ✗ Verbindung fehlgeschlagen:', err.message); process.exit(1); }
+      console.log('\n  ✓ Verbunden! Der Test läuft jetzt.');
+      console.log('  →  Bitte JETZT einen kurzen Test-Druck starten und komplett durchlaufen lassen');
+      console.log('     (gerne auch mal abbrechen). Danach dieses Fenster schließen bzw. Strg+C drücken.\n');
       queryAll();
-      const iv = setInterval(queryAll, 15_000);
-      setTimeout(() => {
-        clearInterval(iv);
-        const file = `anycubic-capture-${Date.now()}.json`;
-        writeFileSync(file, JSON.stringify({
-          probedHost: HOST, modelName: bundle.modelName, typeId, seenTypes: [...new Set(captures.map(c => c.type))],
-          captures,
-        }, null, 2));
-        console.log(`\n[probe] Fertig. ${captures.length} Nachrichten → ${file}`);
-        console.log('[probe] Bitte diese Datei zurückschicken. Sie ist redigiert (keine Zugangsdaten/Stream-URLs).');
-        client.end();
-        process.exit(0);
-      }, DURATION_S * 1000);
+      setInterval(queryAll, 15_000);
+      setInterval(save, 20_000); // Autosave, falls das Fenster hart geschlossen wird
     });
   });
 
   client.on('message', (topic, payload) => {
-    let data; try { data = JSON.parse(payload.toString()); } catch { data = payload.toString(); }
+    let data; try { data = JSON.parse(payload.toString()); } catch { return; }
     const type = (data && data.type) || topic.split('/').slice(-2)[0];
-    captures.push({ topic, type, data: redact(data) });
+    captures.push({ topic, type, data: redact(data), at: Date.now() });
     const state = data?.data?.state ?? data?.data?.project?.state ?? '';
-    console.log(`[probe] ← ${type}${state ? ` (state=${state})` : ''}`);
+    stdout.write(`  · empfangen: ${type}${state ? ` (Status: ${state})` : ''}          \r`);
   });
+  client.on('error', err => { console.error('\n  ✗ Fehler:', err.message); process.exit(1); });
 
-  client.on('error', err => { console.error('[probe] MQTT-Fehler:', err.message); process.exit(1); });
+  const finish = () => {
+    save();
+    console.log(`\n\n  ✓ Fertig — ${captures.length} Nachrichten aufgezeichnet.`);
+    console.log(`  📄 Datei: ${OUT_FILE}`);
+    console.log('  Bitte diese Datei an Flownt zurückschicken. Sie enthält keine Passwörter.\n');
+    process.exit(0);
+  };
+  process.on('SIGINT', finish);
+  process.on('SIGTERM', finish);
 }
 
-discoverCredentials().then(run).catch(err => {
-  console.error('[probe] FEHLER:', err.message);
-  console.error('[probe] Prüfen: Drucker im selben LAN? LAN-Modus aktiv? IP korrekt?');
-  process.exit(1);
-});
+console.log('\n  ── Flownt Anycubic-Verbindungstest ─────────────────────────');
+console.log('  Hilft dabei, Anycubic-Drucker an Flownt anzubinden. Read-only, ohne Risiko.');
+const ipArg = process.argv[2];
+const ipPromise = /^\d{1,3}(\.\d{1,3}){3}$/.test(ipArg || '') ? Promise.resolve(ipArg) : askIp();
+ipPromise
+  .then(async host => run(host, await discoverCredentials(host)))
+  .catch(err => {
+    console.error(`\n  ✗ ${err.message}\n`);
+    console.error('  Bitte prüfen: Drucker eingeschaltet, im selben WLAN/Netzwerk, LAN-Modus aktiv, IP korrekt.\n');
+    process.exit(1);
+  });
