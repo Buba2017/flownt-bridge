@@ -10,19 +10,27 @@
 // Read-only: es werden nur Abfragen gesendet, keine Steuerbefehle. Die Capture-Datei
 // ist redigiert (keine Zugangsdaten, keine Kamera-/Stream-URLs).
 import crypto from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import mqtt from 'mqtt';
 
+// Ablageort: Desktop (für Laien sofort sichtbar), sonst Home-Ordner als Rückfall.
+// ~/Desktop ist nicht überall der echte Desktop (Windows-OneDrive-Umleitung, Lokalisierung) —
+// darum der Fallback, und der volle Pfad wird am Ende ohnehin ausgegeben.
+function outputDir() {
+  const desktop = join(homedir(), 'Desktop');
+  return existsSync(desktop) ? desktop : homedir();
+}
+
 const CTRL_PORT = 18910;
 const MQTT_PORT_FALLBACK = 9883;
 const QUERY_TYPES = ['status', 'info', 'tempature', 'fan', 'light', 'peripherie', 'multiColorBox'];
 const SENSITIVE = new Set(['username', 'password', 'devicecrt', 'devicepk', 'token', 'broker',
   'rtspUrl', 'fileUploadUrl', 'fileUploadurl', 'url', 'streamUrl', 'videoUrl', 'flvUrl']);
-const OUT_FILE = join(homedir(), `flownt-anycubic-capture-${Date.now()}.json`);
+const OUT_FILE = join(outputDir(), `flownt-anycubic-capture-${Date.now()}.json`);
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const nonce = (n) => Array.from({ length: n }, () =>
