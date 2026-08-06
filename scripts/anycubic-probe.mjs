@@ -103,9 +103,34 @@ function run(host, bundle) {
   const queryAll = () => { for (const type of QUERY_TYPES) client.publish(`${base}/${type}`,
     JSON.stringify({ type, action: type === 'multiColorBox' ? 'getInfo' : 'query', timestamp: Date.now(), msgid: crypto.randomUUID(), data: null })); };
 
+  // ── Feste Statuszeile (jede Sekunde neu gezeichnet) ──
+  let printDetected = false;
+  let lastNozzle = null;
+  let lastState = '';
+  let lastMsgAt = 0;
+  const IDLE_STATES = new Set(['free', 'done', 'idle', 'standby', 'ready', 'offline', '']);
+  const W = 72; // Zeilenbreite < 80 Spalten, damit die Statuszeile nicht umbricht (\r-Update)
+  // Dauerhafte Meldung ausgeben, ohne die Statuszeile zu zerstören (erst löschen, dann Zeile).
+  const logLine = (text) => { stdout.write('\r' + ' '.repeat(W) + '\r'); console.log(text); };
+  const renderStatus = () => {
+    if (!lastMsgAt) return;
+    const age = Math.round((Date.now() - lastMsgAt) / 1000);
+    let line;
+    if (age <= 20) {
+      const stat = lastState ? ` · ${lastState}` : '';
+      const nozzle = lastNozzle != null ? ` · ${Math.round(lastNozzle)}°C` : '';
+      const print = printDetected ? ' · 🖨️' : '';
+      line = `  🟢 Verbunden · vor ${age}s · ${captures.length} Nachr.${stat}${nozzle}${print}`;
+    } else {
+      line = `  ⚠️  Keine Daten seit ${age}s — Drucker/LAN-Modus noch an?`;
+    }
+    stdout.write('\r' + line.padEnd(W).slice(0, W) + '\r');
+  };
+
   client.on('connect', () => {
     client.subscribe(subTopic, err => {
       if (err) { console.error('  ✗ Verbindung fehlgeschlagen:', err.message); process.exit(1); }
+      lastMsgAt = Date.now();
       console.log('\n  ✓ Verbunden! Der Test läuft jetzt.');
       console.log('  →  Starte JETZT einen kurzen Druck — am besten DIREKT am Drucker');
       console.log('     (Touchscreen / Datei vom USB-Stick), nicht über den Slicer.');
@@ -114,17 +139,16 @@ function run(host, bundle) {
       console.log('     Gerne danach einen zweiten Druck starten und abbrechen. Dann Strg+C.\n');
       queryAll();
       setInterval(queryAll, 15_000);
-      setInterval(save, 20_000); // Autosave, falls das Fenster hart geschlossen wird
+      setInterval(save, 20_000);      // Autosave, falls das Fenster hart geschlossen wird
+      setInterval(renderStatus, 1_000); // feste Statuszeile aktuell halten
     });
   });
 
-  let printDetected = false;
-  let lastNozzle = null;
-  const IDLE_STATES = new Set(['free', 'done', 'idle', 'standby', 'ready', 'offline', '']);
   client.on('message', (topic, payload) => {
     let data; try { data = JSON.parse(payload.toString()); } catch { return; }
     const type = (data && data.type) || topic.split('/').slice(-2)[0];
     captures.push({ topic, type, data: redact(data), at: Date.now() });
+    lastMsgAt = Date.now();
 
     // Live-Druck erkennen — modellunabhängig über die Düsentemperatur (heiß/heizt = Druck),
     // zusätzlich über einen Status abseits der Leerlauf-Werte. So weiß der Tester sicher,
@@ -132,24 +156,23 @@ function run(host, bundle) {
     const inner = (data && data.data) || {};
     if (type === 'tempature' && typeof inner.curr_nozzle_temp === 'number') lastNozzle = inner.curr_nozzle_temp;
     const envState = (data && typeof data.state === 'string') ? data.state : '';
+    if (envState) lastState = envState;
     const hot = (typeof inner.curr_nozzle_temp === 'number' && inner.curr_nozzle_temp > 50)
              || (typeof inner.target_nozzle_temp === 'number' && inner.target_nozzle_temp > 0);
     const printing = hot || (envState && !IDLE_STATES.has(envState.toLowerCase()));
     if (printing && !printDetected) {
       printDetected = true;
-      console.log('\n\n  ✅ DRUCK ERKANNT — die Aufzeichnung enthält jetzt die richtigen Daten!');
-      console.log('     Bitte das Fenster offen lassen, bis der Druck fertig ist.\n');
+      logLine('\n  ✅ DRUCK ERKANNT — die Aufzeichnung enthält jetzt die richtigen Daten!');
+      logLine('     Bitte das Fenster offen lassen, bis der Druck fertig ist.\n');
     }
-
-    const badge = printDetected ? '🖨️ ' : '';
-    const temp = lastNozzle != null ? ` · Düse ${Math.round(lastNozzle)}°C` : '';
-    stdout.write(`  ${badge}· empfangen: ${type}${envState ? ` (Status: ${envState})` : ''}${temp}          \r`);
+    renderStatus();
   });
-  client.on('error', err => { console.error('\n  ✗ Fehler:', err.message); process.exit(1); });
+  client.on('error', err => { logLine('  ✗ Fehler: ' + err.message); process.exit(1); });
 
   const finish = () => {
     save();
-    console.log(`\n\n  ✓ Fertig — ${captures.length} Nachrichten aufgezeichnet.`);
+    stdout.write('\r' + ' '.repeat(W) + '\r'); // feste Statuszeile löschen
+    console.log(`\n  ✓ Fertig — ${captures.length} Nachrichten aufgezeichnet.`);
     console.log(`  📄 Datei: ${OUT_FILE}`);
     console.log('  Bitte diese Datei an Flownt zurückschicken. Sie enthält keine Passwörter.\n');
     process.exit(0);
