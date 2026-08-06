@@ -177,7 +177,9 @@ aber bewusst NICHT implementiert.
 ## 9. Erste echte Capture — Kobra S1, 2026-08 (494 Nachrichten, Drucker IDLE)
 
 **Modell:** `modelName="Anycubic Kobra S1"`, `typeId=20025`, `device_id=6d8abef5…` (32-hex).
-Achtung: als „Kobra X" gelabelt, aber das Gerät meldet **S1** (typeId 20025 ≠ Default 20030) — echte Kobra-X-Capture steht noch aus.
+Vom Tester **als S1 bestätigt** (2026-08-06) — die Datei war irrtümlich „Kobra X" benannt.
+Damit: **Kobra S1 ist der validierte Referenzdrucker; typeId 20025** (≠ stribor-Default 20030).
+Eine echte **Kobra-X-Capture steht noch aus** (offen, ob X identische Payloads/typeId liefert).
 
 **Bestätigt (der riskante Teil funktioniert):**
 - **MQTT-Connect OHNE Client-Cert** (nur `username`/`password`, `rejectUnauthorized:false`) → alle 7 Query-Typen liefern Reports. grunna-Ansatz gilt; `devicecrt`/`devicepk` nicht nötig.
@@ -193,3 +195,5 @@ Achtung: als „Kobra X" gelabelt, aber das Gerät meldet **S1** (typeId 20025 �
 - **Nötig:** eine Capture **WÄHREND** eines echten Drucks (kurzer Druck komplett + einmal Abbruch), idealerweise mit ACE.
 
 Adapter-Korrekturen aus dieser Capture umgesetzt (`anycubic.ts`): Envelope-`state` erfasst, `/response` ignoriert, `type` nur aus Envelope, jobResult nur aus aktivem Job (nicht aus persistentem `info:"done"`).
+
+**Ursache der Leerlauf-Capture geklärt (2026-08-06):** Der Tester hatte LAN-Modus aktiviert, verbunden, dann (wegen des verschwundenen Slicer-Druckers) LAN-Modus **wieder deaktiviert** und **erst danach** gedruckt → der Druck lief neben dem Aufzeichnungsfenster, das Tool hing am toten Kanal. Beleg: Düse durchgängig 25 °C / Ziel 0 bei lebenden Messwerten (Bett-Rauschen). Konsequenz fürs Testen: LAN-Modus muss **während** des Drucks anbleiben; Druck **direkt am Drucker** starten (Slicer nicht nötig). Probe-Tool nachgerüstet: modellunabhängige **Druck-Erkennung** (Düsentemperatur), Meldung `✅ DRUCK ERKANNT`, feste Statuszeile `🟢 Verbunden · letzte Daten vor Xs` (Pre-Release `anycubic-probe-v1`, Assets aktualisiert). **Offen:** Capture WÄHREND eines Drucks (S1), Kobra-X-Capture, Antwort ob ACE vorhanden.
