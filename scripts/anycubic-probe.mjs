@@ -107,20 +107,43 @@ function run(host, bundle) {
     client.subscribe(subTopic, err => {
       if (err) { console.error('  ✗ Verbindung fehlgeschlagen:', err.message); process.exit(1); }
       console.log('\n  ✓ Verbunden! Der Test läuft jetzt.');
-      console.log('  →  Bitte JETZT einen kurzen Test-Druck starten und komplett durchlaufen lassen');
-      console.log('     (gerne auch mal abbrechen). Danach dieses Fenster schließen bzw. Strg+C drücken.\n');
+      console.log('  →  Starte JETZT einen kurzen Druck — am besten DIREKT am Drucker');
+      console.log('     (Touchscreen / Datei vom USB-Stick), nicht über den Slicer.');
+      console.log('     Der LAN-Modus muss dabei AN bleiben. Lass dieses Fenster offen,');
+      console.log('     bis der Druck fertig ist — warte auf die Meldung „DRUCK ERKANNT".');
+      console.log('     Gerne danach einen zweiten Druck starten und abbrechen. Dann Strg+C.\n');
       queryAll();
       setInterval(queryAll, 15_000);
       setInterval(save, 20_000); // Autosave, falls das Fenster hart geschlossen wird
     });
   });
 
+  let printDetected = false;
+  let lastNozzle = null;
+  const IDLE_STATES = new Set(['free', 'done', 'idle', 'standby', 'ready', 'offline', '']);
   client.on('message', (topic, payload) => {
     let data; try { data = JSON.parse(payload.toString()); } catch { return; }
     const type = (data && data.type) || topic.split('/').slice(-2)[0];
     captures.push({ topic, type, data: redact(data), at: Date.now() });
-    const state = data?.data?.state ?? data?.data?.project?.state ?? '';
-    stdout.write(`  · empfangen: ${type}${state ? ` (Status: ${state})` : ''}          \r`);
+
+    // Live-Druck erkennen — modellunabhängig über die Düsentemperatur (heiß/heizt = Druck),
+    // zusätzlich über einen Status abseits der Leerlauf-Werte. So weiß der Tester sicher,
+    // dass die Aufzeichnung jetzt die wichtigen Daten enthält.
+    const inner = (data && data.data) || {};
+    if (type === 'tempature' && typeof inner.curr_nozzle_temp === 'number') lastNozzle = inner.curr_nozzle_temp;
+    const envState = (data && typeof data.state === 'string') ? data.state : '';
+    const hot = (typeof inner.curr_nozzle_temp === 'number' && inner.curr_nozzle_temp > 50)
+             || (typeof inner.target_nozzle_temp === 'number' && inner.target_nozzle_temp > 0);
+    const printing = hot || (envState && !IDLE_STATES.has(envState.toLowerCase()));
+    if (printing && !printDetected) {
+      printDetected = true;
+      console.log('\n\n  ✅ DRUCK ERKANNT — die Aufzeichnung enthält jetzt die richtigen Daten!');
+      console.log('     Bitte das Fenster offen lassen, bis der Druck fertig ist.\n');
+    }
+
+    const badge = printDetected ? '🖨️ ' : '';
+    const temp = lastNozzle != null ? ` · Düse ${Math.round(lastNozzle)}°C` : '';
+    stdout.write(`  ${badge}· empfangen: ${type}${envState ? ` (Status: ${envState})` : ''}${temp}          \r`);
   });
   client.on('error', err => { console.error('\n  ✗ Fehler:', err.message); process.exit(1); });
 
