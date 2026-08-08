@@ -40,4 +40,7 @@ export type PrinterCommand =
 export interface Adapter {
   getSnapshot(): Promise<PrinterSnapshot>;
   sendCommand?(cmd: PrinterCommand): Promise<void>;
+  /** Ressourcen freigeben (MQTT-Client, Timer) — MUSS bei Config-Änderung/Löschen
+   *  aufgerufen werden, sonst laufen alte Verbindungen als Geister weiter. */
+  dispose?(): void;
 }

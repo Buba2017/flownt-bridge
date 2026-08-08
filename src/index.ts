@@ -49,7 +49,13 @@ function startPrinter(cfg: PrinterConfig): void {
   state.adapter = adapter;
 
   let cancelled = false;
-  runningBridges.set(cfg.id, () => { cancelled = true; state!.running = false; });
+  runningBridges.set(cfg.id, () => {
+    cancelled = true;
+    state!.running = false;
+    // Adapter mit abbauen: sonst reconnectet der alte MQTT-Client ewig weiter und
+    // kämpft am A1/P1 mit dem neuen um den einzigen lokalen Verbindungs-Slot.
+    adapter.dispose?.();
+  });
 
   runBridge(adapter, cfg, state, () => cancelled).catch(err => {
     state!.error   = String(err);
