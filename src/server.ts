@@ -46,7 +46,7 @@ interface Tr {
   backToStatus: string; noPrinters: string; language: string;
   printing: string; idle: string; error: string; offline: string;
   paused: string; lastUpdate: string; noEvents: string; events: string;
-  bed: string; tokenRequired: string; bambuFieldsRequired: string;
+  bed: string; tokenRequired: string; tokenInvalid: string; bambuFieldsRequired: string;
   moonrakerUrlRequired: string; prusaFieldsRequired: string; prusaApiKeyHint: string;
   nameRequired: string; confirmDelete: string;
   smartPlug: string; smartPlugIp: string; smartPlugHint: string;
@@ -98,6 +98,7 @@ const T: Record<BridgeLang, Tr> = {
     events: 'Ereignisse',
     bed: 'Bett',
     tokenRequired: 'Bitte Auth-Token eingeben.',
+    tokenInvalid: 'Der Auth-Token hat nicht das richtige Format (erwartet: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx). Bitte in Flownt unter Drucker bearbeiten → Bridge auf „Token kopieren" klicken und hier einmal einfügen — Feld vorher komplett leeren.',
     bambuFieldsRequired: 'Bitte IP-Adresse, Seriennummer und Access Code eingeben.',
     moonrakerUrlRequired: 'Bitte Drucker-URL eingeben.',
     prusaFieldsRequired: 'Bitte Drucker-URL und API Key eingeben.',
@@ -164,6 +165,7 @@ const T: Record<BridgeLang, Tr> = {
     events: 'Events',
     bed: 'Bed',
     tokenRequired: 'Please enter the auth token.',
+    tokenInvalid: 'The auth token has the wrong format (expected: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx). In Flownt, open Edit printer → Bridge, click "Copy token" and paste it here once — clear the field first.',
     bambuFieldsRequired: 'Please fill in IP address, serial number and access code.',
     moonrakerUrlRequired: 'Please enter the printer URL.',
     prusaFieldsRequired: 'Please enter the printer URL and API key.',
@@ -641,6 +643,11 @@ function parseForm(
   const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
   if (!name?.trim())   return { cfg: null, error: t.nameRequired };
   if (!token?.trim())  return { cfg: null, error: t.tokenRequired };
+  // Der Flownt-Auth-Token ist eine UUID (DB-Spalte uuid). Das Passwortfeld ist blind —
+  // ein Doppel-Paste/Verstümmeln fiel bisher erst serverseitig als 401 auf (Live-Fall:
+  // 64-Hex-Token ohne Bindestriche). Darum hier klar ablehnen statt still speichern.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token.trim()))
+    return { cfg: null, error: t.tokenInvalid };
   const isBambu = adapterType === 'bambu';
   const isPrusa = adapterType === 'prusa';
   if (isBambu  && (!bambuUrl?.trim() || !bambuSerial?.trim() || !bambuCode?.trim()))
