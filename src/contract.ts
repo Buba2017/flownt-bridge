@@ -46,9 +46,11 @@ export interface AmsSlot {
 
 /** Luftfeuchte je AMS-Einheit (Element von `ams_humidity` / `printers.live_ams_humidity`). */
 export interface AmsHumidityUnit {
-  ams_unit: number; // 0–3
-  humidity: number; // 1–5 (Bambu-Skala: 1=trocken, 5=sehr feucht)
-  temp: number;     // °C
+  ams_unit: number;       // 0–3
+  humidity: number;       // 1–5 Trockenheits-Stufe im MQTT-Wert: 5=trocken/gut, 1=sehr feucht
+                          // (invertiert ggü. der Bambu-A–E-Anzeige, A=trocken). Frontend-Mapping in AmsVisual.
+  humidity_pct?: number;  // echte rel. Luftfeuchte in % — nur AMS 2 Pro / AMS HT; Original-AMS liefern nur die Stufe
+  temp: number;           // °C (Innentemperatur der AMS-Einheit)
 }
 
 /**
