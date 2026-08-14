@@ -198,7 +198,7 @@ The status page shows:
 | Printer status | idle / printing / offline with filename, progress %, temperatures |
 | AMS slots | Color circles per slot, material name, remaining %, active slot highlighted |
 | ETA | Formatted remaining print time (e.g. `1h 23m`) |
-| AMS humidity | Humidity level + temperature per AMS unit |
+| AMS humidity | Humidity level (1–5, 5=dry) + real relative humidity % (from `ams.humidity_raw`) + temperature per AMS unit |
 | Events | Last 30 events, color-coded: ✓ green (success) · ℹ gray (info) · ⚠ orange (warning) |
 
 The page auto-refreshes every 8 seconds.
