@@ -15,8 +15,9 @@ interface BambuAmsTray {
 
 interface BambuAmsUnit {
   id?: string;
-  humidity?: string; // "1"–"5" (Bambu-Skala)
-  temp?: string;     // "26.4" (°C)
+  humidity?: string;     // "1"–"5" Trockenheits-Stufe (5=trocken, 1=feucht)
+  humidity_raw?: string; // echte rel. Luftfeuchte in % (z.B. "24") — genau das liest auch HA
+  temp?: string;         // "28.7" (°C, Innentemperatur der AMS-Einheit)
   tray?: BambuAmsTray[];
 }
 
@@ -45,10 +46,6 @@ interface BambuPrint {
 
 interface BambuReport {
   print?: BambuPrint;
-  // Separater Log-Kanal. Enthaelt u.a. die AMS-Feuchte als echten PROZENT-Wert in einem
-  // String "[AMS][TASK]amsX temp:XX.X;humidity:XX%;humidity_idx:X" — im ams-Objekt steht
-  // nur die 1–5-Stufe. (Quelle: OpenBambuAPI/mqtt.md; genau das liest auch HA aus.)
-  mc_print?: { command?: string; param?: string; push_info?: string };
 }
 
 function mapState(state: string): PrinterStatus {
@@ -97,12 +94,16 @@ function parseAmsSlots(ams?: BambuPrint['ams']): AmsSlot[] {
 
 function parseAmsHumidity(ams?: BambuPrint['ams']): AmsHumidityUnit[] {
   if (!ams?.ams?.length) return [];
-return ams.ams
-    .map((unit, amsUnit) => ({
-      ams_unit: amsUnit,
-      humidity: parseInt(unit.humidity ?? '0', 10),
-      temp: parseFloat(unit.temp ?? '0'),
-    }))
+  return ams.ams
+    .map((unit, amsUnit): AmsHumidityUnit => {
+      const pct = parseInt(unit.humidity_raw ?? '', 10);
+      return {
+        ams_unit: amsUnit,
+        humidity: parseInt(unit.humidity ?? '0', 10),
+        temp: parseFloat(unit.temp ?? '0'),
+        humidity_pct: Number.isFinite(pct) && pct >= 0 && pct <= 100 ? pct : undefined,
+      };
+    })
     .filter(u => u.humidity > 0);
 }
 
@@ -151,8 +152,7 @@ export class BambuAdapter implements Adapter {
   private lastMessageAt = 0;
   // Zuletzt gemeldeter echter Feuchte-Prozentwert je AMS-Unit (aus mc_print.push_info).
   // Wird beim naechsten push_status an amsHumidity[].humidity_pct angehaengt.
-  private amsHumidityPct: Record<number, number> = {};
-  private amsDbgLogged = false; // TEMP (v0.8.1): einmaliges Debug der AMS-Rohstruktur
+  private lastHumSig = ''; // fuer ein Log nur bei Aenderung der AMS-Feuchte
   private disposed = false;
 
   constructor(ip: string, serial: string, accessCode: string, printerId = '') {
@@ -243,39 +243,8 @@ export class BambuAdapter implements Adapter {
       try {
         const raw = payload.toString();
         const msg = JSON.parse(raw) as BambuReport;
-
-        // TEMP DEBUG (v0.8.1): kurze Nachrichten, die "humid" erwaehnen -> zeigt die echte
-        // Quelle/Struktur des Prozentwerts (grosse push_status-Dumps via Laenge ausgeschlossen).
-        if (/humid/i.test(raw) && raw.length < 4000) {
-          console.log('[bambu][dbg] humid-msg:', raw.slice(0, 1200));
-        }
-
-        // AMS-Feuchte in % aus dem mc_print-Log ziehen (kommt in EIGENEN Nachrichten,
-        // nicht im ams-Objekt — deshalb vor dem `if (!p) return` unten).
-        const mc = msg.mc_print;
-        const infoStr = typeof mc?.push_info === 'string' ? mc.push_info
-                      : typeof mc?.param === 'string' ? mc.param : '';
-        if (infoStr.includes('[AMS]')) {
-          const m = infoStr.match(/ams(\d+)\b[^]*?humidity:(\d+)\s*%/i);
-          if (m) {
-            const unit = parseInt(m[1], 10);
-            const pct = parseInt(m[2], 10);
-            if (pct >= 0 && pct <= 100 && this.amsHumidityPct[unit] !== pct) {
-              this.amsHumidityPct[unit] = pct;
-              console.log(`[bambu] AMS ${unit} Feuchte: ${pct}%`);
-            }
-          }
-        }
-
         const p = msg.print;
         if (!p) return;
-
-        // TEMP DEBUG (v0.8.1): einmal die kompletten AMS-Unit-Felder zeigen — falls Bambu
-        // den %-Wert direkt im ams-Objekt mitschickt (z.B. humidity_raw), sehen wir es hier.
-        if (p.ams?.ams?.length && !this.amsDbgLogged) {
-          this.amsDbgLogged = true;
-          console.log('[bambu][dbg] ams-units:', JSON.stringify(p.ams.ams).slice(0, 1500));
-        }
 
         // push_status = periodic full-state push (gcode_state may be "" when printer is idle)
         const isPushStatus = p.command === 'push_status';
@@ -306,10 +275,10 @@ export class BambuAdapter implements Adapter {
           : p.ams?.tray_now;
         const amsSlots = parseAmsSlots(p.ams);
         const amsHumidity = parseAmsHumidity(p.ams);
-        // echten %-Wert (aus mc_print.push_info) je Unit anhaengen, falls bekannt
-        for (const u of amsHumidity) {
-          const pct = this.amsHumidityPct[u.ams_unit];
-          if (pct != null) u.humidity_pct = pct;
+        const humSig = amsHumidity.map(u => `${u.ams_unit}:${u.humidity}/5${u.humidity_pct != null ? `/${u.humidity_pct}%` : ''}`).join(' ');
+        if (humSig && humSig !== this.lastHumSig) {
+          this.lastHumSig = humSig;
+          console.log('[bambu] AMS Feuchte:', humSig);
         }
 
         // Carry parsedFilamentWeights forward (cleared at start of each new print)
