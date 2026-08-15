@@ -98,6 +98,7 @@ export interface IngestBody {
   temp_bed?: number;
   eta_s?: number;
   duration_min?: number;
+  source_job_id?: string;   // eindeutige Bambu-Job-ID (nur job_complete) — Backend dedupt gegen Re-Emission
   live_power_w?: number;
   ams_state?: AmsSlot[];
   ams_active_slot?: number;

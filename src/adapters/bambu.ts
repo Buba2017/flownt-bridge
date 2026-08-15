@@ -34,6 +34,8 @@ interface BambuPrint {
   nozzle_temper?: number;
   bed_temper?: number;
   subtask_name?: string;
+  subtask_id?: string; // eindeutige Job-ID (stabil je Druck; bei Re-Emission desselben Jobs gleich) — Dedup
+  job_id?: string;     // Fallback-Job-ID
   gcode_file?: string; // absoluter Pfad auf dem Drucker, z.B. "/data/Metadata/plate_1.gcode"
   file?: string;       // alternatives Feld, gleiches Format
   hms?: BambuHms[];
@@ -289,6 +291,7 @@ export class BambuAdapter implements Adapter {
           status: newStatus,
           jobResult: mapJobResult(gcodeState),
           printFile: p.subtask_name || undefined,
+          sourceJobId: p.subtask_id || p.job_id || undefined,
           progressPct: p.mc_percent,
           tempHotend: p.nozzle_temper,
           tempBed: p.bed_temper,

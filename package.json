@@ -1,6 +1,6 @@
 {
   "name": "flownt-bridge",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "description": "Local bridge connecting 3D printers to Flownt",
   "type": "module",
   "scripts": {

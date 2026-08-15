@@ -18,6 +18,7 @@ export interface PrinterSnapshot {
   status: PrinterStatus;
   jobResult?: JobResult | null; // gesetzt am Terminal-Übergang eines Drucks; sonst null/undefined
   printFile?: string;
+  sourceJobId?: string | null;  // eindeutige Druck-/Job-ID (für Backend-Dedup gegen Re-Emission)
   progressPct?: number;
   tempHotend?: number;
   tempBed?: number;
