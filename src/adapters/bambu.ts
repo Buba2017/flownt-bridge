@@ -15,8 +15,9 @@ interface BambuAmsTray {
 
 interface BambuAmsUnit {
   id?: string;
-  humidity?: string; // "1"–"5" (Bambu-Skala)
-  temp?: string;     // "26.4" (°C)
+  humidity?: string;     // "1"–"5" Trockenheits-Stufe (5=trocken, 1=feucht)
+  humidity_raw?: string; // echte rel. Luftfeuchte in % (z.B. "24") — genau das liest auch HA
+  temp?: string;         // "28.7" (°C, Innentemperatur der AMS-Einheit)
   tray?: BambuAmsTray[];
 }
 
@@ -33,6 +34,8 @@ interface BambuPrint {
   nozzle_temper?: number;
   bed_temper?: number;
   subtask_name?: string;
+  subtask_id?: string; // eindeutige Job-ID (stabil je Druck; bei Re-Emission desselben Jobs gleich) — Dedup
+  job_id?: string;     // Fallback-Job-ID
   gcode_file?: string; // absoluter Pfad auf dem Drucker, z.B. "/data/Metadata/plate_1.gcode"
   file?: string;       // alternatives Feld, gleiches Format
   hms?: BambuHms[];
@@ -93,12 +96,16 @@ function parseAmsSlots(ams?: BambuPrint['ams']): AmsSlot[] {
 
 function parseAmsHumidity(ams?: BambuPrint['ams']): AmsHumidityUnit[] {
   if (!ams?.ams?.length) return [];
-return ams.ams
-    .map((unit, amsUnit) => ({
-      ams_unit: amsUnit,
-      humidity: parseInt(unit.humidity ?? '0', 10),
-      temp: parseFloat(unit.temp ?? '0'),
-    }))
+  return ams.ams
+    .map((unit, amsUnit): AmsHumidityUnit => {
+      const pct = parseInt(unit.humidity_raw ?? '', 10);
+      return {
+        ams_unit: amsUnit,
+        humidity: parseInt(unit.humidity ?? '0', 10),
+        temp: parseFloat(unit.temp ?? '0'),
+        humidity_pct: Number.isFinite(pct) && pct >= 0 && pct <= 100 ? pct : undefined,
+      };
+    })
     .filter(u => u.humidity > 0);
 }
 
@@ -120,6 +127,19 @@ function joinPath(dir: string, name: string): string {
   return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
 }
 
+// Reconnect-Backoff: A1/P1 bedienen lokal effektiv nur EINEN MQTT-Client; jeder
+// fehlgeschlagene Versuch hinterlässt druckerseitig eine halb-offene Verbindung, die
+// den Slot bis zum TCP-Keepalive-Timeout (~20 min) blockieren kann. Aggressives
+// 5s-Dauerfeuer (alt) ist der dokumentierte Auslöser dafür (BambuStudio#2404,
+// ha-bambulab#174) — daher ansteigender Abstand.
+const RECONNECT_MIN_MS = 15_000;
+const RECONNECT_MAX_MS = 120_000;
+// Verbunden, aber keine Push-Daten mehr: dokumentiertes Firmware-Verhalten, wenn ein
+// zweiter Client (Bambu Handy/Studio) die Verbindung übernimmt — die alte bleibt
+// offen, bekommt aber nichts mehr. Der Watchdog erkennt das und baut sauber neu auf.
+const DATA_SILENCE_MS  = 5 * 60_000;
+const WATCHDOG_TICK_MS = 60_000;
+
 export class BambuAdapter implements Adapter {
   private ip: string;
   private serial: string;
@@ -128,6 +148,14 @@ export class BambuAdapter implements Adapter {
   private connected = false;
   private snapshot: PrinterSnapshot = { status: 'offline' };
   private client: mqtt.MqttClient | null = null;
+  private reconnectDelayMs = RECONNECT_MIN_MS;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
+  private lastMessageAt = 0;
+  // Zuletzt gemeldeter echter Feuchte-Prozentwert je AMS-Unit (aus mc_print.push_info).
+  // Wird beim naechsten push_status an amsHumidity[].humidity_pct angehaengt.
+  private lastHumSig = ''; // fuer ein Log nur bei Aenderung der AMS-Feuchte
+  private disposed = false;
 
   constructor(ip: string, serial: string, accessCode: string, printerId = '') {
     this.ip = ip.replace(/^https?:\/\//, '');
@@ -135,19 +163,68 @@ export class BambuAdapter implements Adapter {
     this.accessCode = accessCode;
     this.printerId = printerId;
     this.connect();
+    this.watchdog = setInterval(() => this.checkDataSilence(), WATCHDOG_TICK_MS);
+  }
+
+  /** Adapter vollständig stoppen (Config-Änderung/Löschen) — sonst reconnectet der
+   *  alte MQTT-Client ewig weiter und kämpft mit dem neuen um den einzigen Slot. */
+  dispose(): void {
+    this.disposed = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    if (this.watchdog)       { clearInterval(this.watchdog);      this.watchdog = null; }
+    this.teardownClient();
+    this.connected = false;
+  }
+
+  /** Alten Client restlos abbauen, bevor ein neuer verbindet — halb-offene
+   *  Verbindungen blockieren am A1/P1 den lokalen MQTT-Slot. */
+  private teardownClient(): void {
+    if (!this.client) return;
+    this.client.removeAllListeners();
+    try { this.client.end(true); } catch { /* ignore */ }
+    this.client = null;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.disposed || this.reconnectTimer) return;
+    const delay = this.reconnectDelayMs;
+    this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, RECONNECT_MAX_MS);
+    console.log(`[bambu] Reconnect in ${delay / 1000}s`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  private checkDataSilence(): void {
+    if (this.disposed || !this.connected || this.lastMessageAt === 0) return;
+    const silentMs = Date.now() - this.lastMessageAt;
+    if (silentMs < DATA_SILENCE_MS) return;
+    const min = Math.round(silentMs / 60_000);
+    console.warn(`[bambu] ${min} min keine Daten trotz Verbindung — Neuaufbau`);
+    addEvent(this.printerId, 'warn',
+      `${min} min keine Druckerdaten trotz Verbindung — Neuaufbau. (Evtl. hat ein anderes Gerät die Drucker-Verbindung übernommen, z. B. Bambu Handy/Studio)`);
+    this.connected = false;
+    this.snapshot = { ...this.snapshot, status: 'offline' };
+    this.connect();
   }
 
   private connect(): void {
+    if (this.disposed) return;
+    this.teardownClient();
     this.client = mqtt.connect(`mqtts://${this.ip}:8883`, {
       username: 'bblp',
       password: this.accessCode,
       rejectUnauthorized: false,
-      reconnectPeriod: 5_000,
-      connectTimeout: 10_000,
+      reconnectPeriod: 0,       // kein Auto-Reconnect — manueller Backoff (scheduleReconnect)
+      connectTimeout: 15_000,
+      keepalive: 30,            // tote Verbindungen schneller erkennen (Default 60 s)
     });
 
     this.client.on('connect', () => {
       this.connected = true;
+      this.reconnectDelayMs = RECONNECT_MIN_MS;
+      this.lastMessageAt = Date.now();
       this.snapshot = { status: 'idle' };
       console.log('[bambu] MQTT connected →', this.ip);
       addEvent(this.printerId, 'success', `Drucker verbunden: ${this.ip}`);
@@ -164,6 +241,7 @@ export class BambuAdapter implements Adapter {
     });
 
     this.client.on('message', (_topic, payload) => {
+      this.lastMessageAt = Date.now();
       try {
         const raw = payload.toString();
         const msg = JSON.parse(raw) as BambuReport;
@@ -199,6 +277,11 @@ export class BambuAdapter implements Adapter {
           : p.ams?.tray_now;
         const amsSlots = parseAmsSlots(p.ams);
         const amsHumidity = parseAmsHumidity(p.ams);
+        const humSig = amsHumidity.map(u => `${u.ams_unit}:${u.humidity}/5${u.humidity_pct != null ? `/${u.humidity_pct}%` : ''}`).join(' ');
+        if (humSig && humSig !== this.lastHumSig) {
+          this.lastHumSig = humSig;
+          console.log('[bambu] AMS Feuchte:', humSig);
+        }
 
         // Carry parsedFilamentWeights forward (cleared at start of each new print)
         const isNewPrint = prevStatus !== 'printing' && prevStatus !== 'paused' && newStatus === 'printing';
@@ -208,6 +291,7 @@ export class BambuAdapter implements Adapter {
           status: newStatus,
           jobResult: mapJobResult(gcodeState),
           printFile: p.subtask_name || undefined,
+          sourceJobId: p.subtask_id || p.job_id || undefined,
           progressPct: p.mc_percent,
           tempHotend: p.nozzle_temper,
           tempBed: p.bed_temper,
@@ -230,22 +314,28 @@ export class BambuAdapter implements Adapter {
       }
     });
 
-    this.client.on('reconnect', () => {
-      this.connected = false;
-      this.snapshot = { ...this.snapshot, status: 'offline' };
-      console.log('[bambu] Reconnecting…');
-    });
-
     this.client.on('error', err => {
       this.connected = false;
       this.snapshot = { ...this.snapshot, status: 'offline' };
       console.error('[bambu] MQTT error:', err.message);
-      addEvent(this.printerId, 'warn', `MQTT-Fehler: ${err.message}`);
+      // "connack timeout": Drucker antwortet auf den Verbindungswunsch nicht — am A1/P1
+      // typischerweise, weil der einzige lokale Slot (noch) belegt ist.
+      const hint = err.message.includes('connack')
+        ? ' (Drucker antwortet nicht — lokaler Verbindungs-Slot evtl. noch belegt)' : '';
+      addEvent(this.printerId, 'warn', `MQTT-Fehler: ${err.message}${hint}`);
     });
 
     this.client.on('close', () => {
+      const wasConnected = this.connected;
       this.connected = false;
       this.snapshot = { ...this.snapshot, status: 'offline' };
+      if (wasConnected) {
+        // Diagnose: Abriss einer STEHENDEN Verbindung getrennt loggen — das ist das
+        // Muster "anderer Client hat übernommen" bzw. WLAN-Abriss (≠ connack timeout).
+        console.warn('[bambu] Bestehende MQTT-Verbindung abgerissen');
+        addEvent(this.printerId, 'warn', 'Bestehende Drucker-Verbindung abgerissen (WLAN-Abriss oder anderes Gerät hat übernommen) — baue neu auf');
+      }
+      this.scheduleReconnect();
     });
   }
 

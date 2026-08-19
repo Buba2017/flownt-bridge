@@ -27,6 +27,7 @@ async function push(
     eta_s: snapshot.etaSec,
   };
   if (durationMin != null) body.duration_min = durationMin;
+  if (eventType === 'job_complete' && snapshot.sourceJobId) body.source_job_id = snapshot.sourceJobId;
   if (snapshot.powerW != null) body.live_power_w = snapshot.powerW;
   if (snapshot.amsSlots?.length) body.ams_state = snapshot.amsSlots;
   if (snapshot.activeMqttSlot != null) body.ams_active_slot = snapshot.activeMqttSlot;
@@ -103,6 +104,7 @@ export async function runBridge(
   let prevStatus: PrinterSnapshot['status'] | null = null;
   let printStartedAt: number | null = null;
   let lastActiveSlot: number | null = null;   // physischer AMS-Slot (tray_now), global: unit*4+slot
+  let lastSourceJobId: string | null = null;  // Job-ID waehrend des Drucks gemerkt → beim Abschluss senden (Dedup)
   let lastAmsSlots: AmsSlot[] = [];           // letzter AMS-Status (Farbe je physischem Slot) — Fallback-Zuordnung per Farbe
   let lastFilamentMapping: number[] = [];     // Bambu print.mapping (Slicer-Filament-id → physischer Tray-Code) — primäre, deterministische Zuordnung
   let lastEnergyWh: number | null = null;     // letzter Energiezähler-Stand vom Smart-Plug (Wh)
@@ -133,6 +135,8 @@ export async function runBridge(
       if (isTerminal) {
         const outcome = snapshot.jobResult ?? (snapshot.status === 'error' ? 'failed' : 'completed');
         eventType = outcome === 'completed' ? 'job_complete' : 'job_failed';
+        // Job-ID vom laufenden Druck an den Abschluss haengen (Re-Emission → gleiche ID → Dedup)
+        snapshot = { ...snapshot, sourceJobId: lastSourceJobId ?? snapshot.sourceJobId };
         if (printStartedAt != null) {
           durationMin = Math.round((Date.now() - printStartedAt) / 60_000);
         }
@@ -159,6 +163,9 @@ export async function runBridge(
         energyStartWh = lastEnergyWh; // Energiezähler-Stand bei Druckstart merken
         addEvent(cfg.id, 'info', `Druck gestartet: ${snapshot.printFile ?? '–'}`);
       }
+
+      // Job-ID waehrend des Drucks merken → beim Abschluss senden (Dedup gegen Re-Emission)
+      if (snapshot.status === 'printing' && snapshot.sourceJobId) lastSourceJobId = snapshot.sourceJobId;
 
       prevStatus = snapshot.status;
 

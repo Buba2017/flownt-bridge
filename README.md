@@ -8,7 +8,8 @@ Connects your 3D printer to Flownt in real time — live status, temperatures, p
 |---|---|
 | Bambu Lab (X1, P1, A1, …) | ✅ |
 | Klipper / Moonraker | ✅ |
-| Prusa Connect | 🔜 Coming soon |
+| Prusa Link (MK4, XL, MINI, Core One) | ✅ (v0.5.0) |
+| Anycubic Kobra (X, S1) | 🧪 In testing |
 | OctoPrint | 🔜 Coming soon |
 
 ---
@@ -100,6 +101,15 @@ Find all three values on the printer display under **Settings → Network**:
 
 Click **"Save & Connect"**. The page switches to the status view — a green dot means the printer is connected.
 
+### Prusa Link
+
+| Field | Description | Example |
+|---|---|---|
+| Printer URL | IP address of the printer | `http://192.168.1.100` |
+| API Key | From the printer display: **Settings → Network → PrusaLink** | |
+
+Read-only: live status, progress, temperatures, ETA, and automatic print logs with filament usage on completion. Filament weight is parsed from the print file (`.gcode` / `.bgcode`, best-effort).
+
 ---
 
 ## Raspberry Pi — Autostart (empfohlen)
@@ -188,7 +198,7 @@ The status page shows:
 | Printer status | idle / printing / offline with filename, progress %, temperatures |
 | AMS slots | Color circles per slot, material name, remaining %, active slot highlighted |
 | ETA | Formatted remaining print time (e.g. `1h 23m`) |
-| AMS humidity | Humidity level + temperature per AMS unit |
+| AMS humidity | Humidity level (1–5, 5=dry) + real relative humidity % (from `ams.humidity_raw`) + temperature per AMS unit |
 | Events | Last 30 events, color-coded: ✓ green (success) · ℹ gray (info) · ⚠ orange (warning) |
 
 The page auto-refreshes every 8 seconds.

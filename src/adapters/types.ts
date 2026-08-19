@@ -18,6 +18,7 @@ export interface PrinterSnapshot {
   status: PrinterStatus;
   jobResult?: JobResult | null; // gesetzt am Terminal-Übergang eines Drucks; sonst null/undefined
   printFile?: string;
+  sourceJobId?: string | null;  // eindeutige Druck-/Job-ID (für Backend-Dedup gegen Re-Emission)
   progressPct?: number;
   tempHotend?: number;
   tempBed?: number;
@@ -40,4 +41,7 @@ export type PrinterCommand =
 export interface Adapter {
   getSnapshot(): Promise<PrinterSnapshot>;
   sendCommand?(cmd: PrinterCommand): Promise<void>;
+  /** Ressourcen freigeben (MQTT-Client, Timer) — MUSS bei Config-Änderung/Löschen
+   *  aufgerufen werden, sonst laufen alte Verbindungen als Geister weiter. */
+  dispose?(): void;
 }

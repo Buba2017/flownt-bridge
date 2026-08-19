@@ -12,7 +12,7 @@ import { Adapter, PrinterCommand, PrinterSnapshot } from './adapters/types.js';
 import { getEventLog } from './events.js';
 import { BRIDGE_VERSION } from './version.js';
 
-const PORT = 7432;
+const PORT = Number(process.env.FLOWNT_BRIDGE_PORT) || 7432;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ interface Tr {
   bridge: string; status: string; settings: string; addPrinter: string;
   editPrinter: string; myPrinters: string; printerName: string;
   printerNamePlaceholder: string; printerType: string; authToken: string;
-  authTokenHint: string; ipAddress: string; serial: string;
+  authTokenHint: string; prefilledFromFlownt: string; ipAddress: string; serial: string;
   serialPlaceholder: string; accessCode: string; accessCodeHint: string;
   printerUrl: string; apiKey: string; bambuCloud: string;
   cloudEmail: string; cloudEmailHint: string; cloudPassword: string;
@@ -46,7 +46,7 @@ interface Tr {
   backToStatus: string; noPrinters: string; language: string;
   printing: string; idle: string; error: string; offline: string;
   paused: string; lastUpdate: string; noEvents: string; events: string;
-  bed: string; tokenRequired: string; bambuFieldsRequired: string;
+  bed: string; tokenRequired: string; tokenInvalid: string; bambuFieldsRequired: string;
   moonrakerUrlRequired: string; prusaFieldsRequired: string; prusaApiKeyHint: string;
   nameRequired: string; confirmDelete: string;
   smartPlug: string; smartPlugIp: string; smartPlugHint: string;
@@ -69,6 +69,7 @@ const T: Record<BridgeLang, Tr> = {
     printerType: 'Drucker-Typ',
     authToken: 'Flownt Auth-Token',
     authTokenHint: 'In Flownt → Drucker bearbeiten → Bridge → Token kopieren',
+    prefilledFromFlownt: '✓ Von Flownt vorausgefüllt — nur noch den Access Code bzw. API Key eintragen und speichern.',
     ipAddress: 'IP-Adresse',
     serial: 'Seriennummer',
     serialPlaceholder: '00M09A123456789',
@@ -97,6 +98,7 @@ const T: Record<BridgeLang, Tr> = {
     events: 'Ereignisse',
     bed: 'Bett',
     tokenRequired: 'Bitte Auth-Token eingeben.',
+    tokenInvalid: 'Der Auth-Token hat nicht das richtige Format (erwartet: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx). Bitte in Flownt unter Drucker bearbeiten → Bridge auf „Token kopieren" klicken und hier einmal einfügen — Feld vorher komplett leeren.',
     bambuFieldsRequired: 'Bitte IP-Adresse, Seriennummer und Access Code eingeben.',
     moonrakerUrlRequired: 'Bitte Drucker-URL eingeben.',
     prusaFieldsRequired: 'Bitte Drucker-URL und API Key eingeben.',
@@ -134,6 +136,7 @@ const T: Record<BridgeLang, Tr> = {
     printerType: 'Printer Type',
     authToken: 'Flownt Auth Token',
     authTokenHint: 'Open Flownt → Edit printer → Bridge Connection → Copy token',
+    prefilledFromFlownt: '✓ Pre-filled from Flownt — just enter the access code / API key and save.',
     ipAddress: 'IP Address',
     serial: 'Serial Number',
     serialPlaceholder: '00M09A123456789',
@@ -162,6 +165,7 @@ const T: Record<BridgeLang, Tr> = {
     events: 'Events',
     bed: 'Bed',
     tokenRequired: 'Please enter the auth token.',
+    tokenInvalid: 'The auth token has the wrong format (expected: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx). In Flownt, open Edit printer → Bridge, click "Copy token" and paste it here once — clear the field first.',
     bambuFieldsRequired: 'Please fill in IP address, serial number and access code.',
     moonrakerUrlRequired: 'Please enter the printer URL.',
     prusaFieldsRequired: 'Please enter the printer URL and API key.',
@@ -250,6 +254,7 @@ function html(title: string, body: string, autoRefresh = false): string {
   hr.sep { border: none; border-top: 1px solid #222; margin: 0.875rem 0; }
   .empty { color: #333; font-size: 0.85rem; text-align: center; padding: 1.5rem 0; }
   .err-banner { color: #ef4444; background: #ef444415; border: 1px solid #ef444430; border-radius: 8px; padding: 0.625rem 0.875rem; margin-bottom: 1rem; font-size: 0.85rem; }
+  .ok-banner { color: #10b981; background: #10b98115; border: 1px solid #10b98130; border-radius: 8px; padding: 0.625rem 0.875rem; margin-bottom: 1rem; font-size: 0.85rem; }
   .ver-footer { color: #444; font-size: 0.72rem; margin-top: auto; padding-top: 1rem; }
 </style>
 </head>
@@ -525,13 +530,29 @@ function setupListPage(): string {
 
 // ── Add / Edit form ────────────────────────────────────────────────────────────
 
-function printerFormPage(printer?: PrinterConfig, error?: string): string {
+// Vorbefüllung per Deep-Link aus Flownt („In Bridge öffnen"): Name/Token/Adapter/IP/Serial
+// kommen als Query-Parameter. Der Access Code bleibt bewusst leer (Secret nur lokal).
+// Vorbefüllung reflektiert URL-Parameter in HTML → alle Werte über das bestehende
+// escAttr() (Reflected-XSS-Schutz). Der Access Code bleibt bewusst leer (Secret nur lokal).
+export interface FormPrefill { token?: string; name?: string; adapter?: string; url?: string; serial?: string; }
+
+function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: FormPrefill): string {
   const t = tr();
   const cfg = loadMultiConfig();
   const isEdit  = !!printer;
   const title   = isEdit ? t.editPrinter : t.addPrinter;
   const action  = isEdit ? `/setup/${printer!.id}` : '/setup/new';
-  const isBambu = !printer || printer.adapterType === 'bambu';
+  // Aktiver Adapter: bestehender Drucker → sonst Vorbefüllung → sonst Bambu.
+  const adapter = printer?.adapterType ?? (prefill?.adapter as PrinterConfig['adapterType'] | undefined) ?? 'bambu';
+  const isBambu = adapter === 'bambu';
+  // Feldwerte: bestehender Drucker gewinnt; sonst Vorbefüllung (nur passend zum Adapter).
+  const vName   = escAttr(printer?.name ?? prefill?.name ?? '');
+  const vToken  = escAttr(printer?.flowntAuthToken ?? prefill?.token ?? '');
+  const vBambuUrl    = escAttr(printer?.adapterType === 'bambu' ? printer.adapterUrl : (!printer && isBambu ? prefill?.url ?? '' : ''));
+  const vBambuSerial = escAttr(printer?.adapterType === 'bambu' ? printer.adapterSerial : (!printer && isBambu ? prefill?.serial ?? '' : ''));
+  const vMoonUrl = escAttr(printer?.adapterType === 'moonraker' ? printer.adapterUrl : (!printer && adapter === 'moonraker' ? prefill?.url ?? '' : ''));
+  const vPrusaUrl = escAttr(printer?.adapterType === 'prusa' ? printer.adapterUrl : (!printer && adapter === 'prusa' ? prefill?.url ?? '' : ''));
+  const prefilled = !isEdit && !!(prefill?.token || prefill?.name);
 
   return html(title, `
 <div class="topbar">
@@ -544,51 +565,52 @@ function printerFormPage(printer?: PrinterConfig, error?: string): string {
 <div class="card card-sm">
   <h1>${title}</h1>
   ${error ? `<div class="err-banner">${error}</div>` : ''}
+  ${prefilled ? `<div class="ok-banner">${t.prefilledFromFlownt}</div>` : ''}
   <form method="POST" action="${action}">
 
     <label>${t.printerName}</label>
-    <input name="name" placeholder="${t.printerNamePlaceholder}" value="${printer?.name ?? ''}" required/>
+    <input name="name" placeholder="${t.printerNamePlaceholder}" value="${vName}" required/>
 
     <label>${t.authToken}</label>
-    <input name="token" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${printer?.flowntAuthToken ?? ''}" required/>
+    <input name="token" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${vToken}" required/>
     <p class="hint">${t.authTokenHint}</p>
 
     <label>${t.printerType}</label>
     <select name="adapterType" id="adapterTypeSelect" onchange="switchAdapter(this.value)">
       <option value="bambu"      ${isBambu ? 'selected' : ''}>Bambu Lab (X1, P1, A1, H2D, …)</option>
-      <option value="moonraker"  ${printer?.adapterType === 'moonraker' ? 'selected' : ''}>Moonraker / Klipper</option>
-      <option value="prusa"      ${printer?.adapterType === 'prusa' ? 'selected' : ''}>Prusa Link (MK4, XL, MINI, Core One)</option>
+      <option value="moonraker"  ${adapter === 'moonraker' ? 'selected' : ''}>Moonraker / Klipper</option>
+      <option value="prusa"      ${adapter === 'prusa' ? 'selected' : ''}>Prusa Link (MK4, XL, MINI, Core One)</option>
     </select>
 
     <div id="adapter-bambu">
       <label>${t.ipAddress}</label>
-      <input name="bambuUrl" placeholder="192.168.1.100" value="${printer?.adapterType === 'bambu' ? printer.adapterUrl : ''}"/>
+      <input name="bambuUrl" placeholder="192.168.1.100" value="${vBambuUrl}"/>
       <label>${t.serial}</label>
-      <input name="bambuSerial" placeholder="${t.serialPlaceholder}" value="${printer?.adapterType === 'bambu' ? printer.adapterSerial : ''}"/>
+      <input name="bambuSerial" placeholder="${t.serialPlaceholder}" value="${vBambuSerial}"/>
       <label>${t.accessCode}</label>
-      <input name="bambuCode" type="password" placeholder="8-stelliger Code" value="${printer?.adapterType === 'bambu' ? printer.adapterApiKey : ''}"/>
+      <input name="bambuCode" type="password" placeholder="8-stelliger Code" value="${printer?.adapterType === 'bambu' ? printer.adapterApiKey : ''}"${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.accessCodeHint}</p>
       <hr class="sep"/>
       <div class="section-label" style="margin-bottom:0.625rem;">${t.bambuCloud}</div>
       <label>${t.cloudEmail}</label>
-      <input name="bambuCloudEmail" type="email" placeholder="email@example.com" value="${printer?.bambuCloudEmail ?? ''}"/>
+      <input name="bambuCloudEmail" type="email" placeholder="email@example.com" value="${escAttr(printer?.bambuCloudEmail ?? '')}"/>
       <label>${t.cloudPassword}</label>
-      <input name="bambuCloudPassword" type="password" value="${printer?.bambuCloudPassword ?? ''}"/>
+      <input name="bambuCloudPassword" type="password" value="${escAttr(printer?.bambuCloudPassword ?? '')}"/>
       <p class="hint">${t.cloudEmailHint}</p>
     </div>
 
     <div id="adapter-moonraker">
       <label>${t.printerUrl}</label>
-      <input name="moonrakerUrl" placeholder="http://192.168.1.100" value="${printer?.adapterType === 'moonraker' ? printer.adapterUrl : ''}"/>
+      <input name="moonrakerUrl" placeholder="http://192.168.1.100" value="${vMoonUrl}"/>
       <label>${t.apiKey}</label>
       <input name="moonrakerKey" type="password" value="${printer?.adapterType === 'moonraker' ? printer.adapterApiKey : ''}"/>
     </div>
 
     <div id="adapter-prusa">
       <label>${t.printerUrl}</label>
-      <input name="prusaUrl" placeholder="http://192.168.1.100" value="${printer?.adapterType === 'prusa' ? printer.adapterUrl : ''}"/>
+      <input name="prusaUrl" placeholder="http://192.168.1.100" value="${vPrusaUrl}"/>
       <label>${t.apiKey}</label>
-      <input name="prusaKey" type="password" value="${printer?.adapterType === 'prusa' ? printer.adapterApiKey : ''}"/>
+      <input name="prusaKey" type="password" value="${printer?.adapterType === 'prusa' ? printer.adapterApiKey : ''}"${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.prusaApiKeyHint}</p>
     </div>
 
@@ -621,6 +643,11 @@ function parseForm(
   const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
   if (!name?.trim())   return { cfg: null, error: t.nameRequired };
   if (!token?.trim())  return { cfg: null, error: t.tokenRequired };
+  // Der Flownt-Auth-Token ist eine UUID (DB-Spalte uuid). Das Passwortfeld ist blind —
+  // ein Doppel-Paste/Verstümmeln fiel bisher erst serverseitig als 401 auf (Live-Fall:
+  // 64-Hex-Token ohne Bindestriche). Darum hier klar ablehnen statt still speichern.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token.trim()))
+    return { cfg: null, error: t.tokenInvalid };
   const isBambu = adapterType === 'bambu';
   const isPrusa = adapterType === 'prusa';
   if (isBambu  && (!bambuUrl?.trim() || !bambuSerial?.trim() || !bambuCode?.trim()))
@@ -882,7 +909,14 @@ export function startServer(callbacks: ServerCallbacks): void {
 
   app.get('/setup', (_req, res) => res.send(setupListPage()));
 
-  app.get('/setup/new', (_req, res) => res.send(printerFormPage()));
+  app.get('/setup/new', (req, res) => {
+    const q = req.query as Record<string, string | undefined>;
+    // Vorbefüllung nur übernehmen, wenn ein Token mitkommt (Deep-Link aus Flownt).
+    const prefill = q.token
+      ? { token: q.token, name: q.name, adapter: q.adapter, url: q.url, serial: q.serial }
+      : undefined;
+    res.send(printerFormPage(undefined, undefined, prefill));
+  });
 
   app.post('/setup/new', (req, res) => {
     const { cfg: newCfg, error } = parseForm(req.body as Record<string, string>, newPrinterId());
