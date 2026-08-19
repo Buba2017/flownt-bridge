@@ -36,10 +36,11 @@ Drei Tester-Captures (`~/Desktop/Anycubic Integration/`), ausgewertet mit
 
 ## Offen ⚠️
 
-- **Einheit von `supplies_usage`**: Shark (46 min, PLA 0.2) = 6530, BierHelm (62 min, PLA 0.08) = 2268.
-  Kandidaten: **mm** (→ 19,4 g bzw. 6,8 g) oder **mg** (→ 6,5 g bzw. 2,3 g). Die Protokoll-Doku
-  behauptete „Gramm" — das ist mit 6530 widerlegt. Klärung: Tester nach Slicer-Gewichtsschätzung
-  des exakten Plates fragen (oder Druck wiegen); eine Zahl genügt.
+- ~~Einheit von `supplies_usage`~~ **GEKLÄRT (2026-08-19): Milligramm.** Der Anycubic-App-
+  Auftragsbericht der Testerin weist den Shark-Druck (supplies_usage final 6530, Settings
+  identisch zur Capture: PLA 0.2 mm, Bett 60 °C, Düse 220 °C) als „6 g" aus → 6530 mg = 6,53 g.
+  BierHelm (S1): 2268 mg = 2,27 g. `SUPPLIES_UNIT = 'mg'` im Adapter gesetzt; die frühere
+  Doku-Annahme „direkt Gramm" und die mm-Hypothese sind beide widerlegt.
 - `extfilbox` (externe Spule, S1) hat noch kein Contract-Pendant — Live-Farbe/-Material der
   externen Spule wird vorerst nicht gemeldet.
 - ACE-`humidity` war in allen Captures 0 (Skala unklar) — bewusst nicht gemeldet.
@@ -51,16 +52,15 @@ Der finalisierte Adapter wurde mit `scripts/anycubic-replay.mjs` gegen alle drei
 gespielt (Nachricht für Nachricht durch `onMessage`, Job-Ende-Erkennung wie `bridge.ts`):
 
 - **S1**: Abbruch → `job_failed (aborted)`, JobId `690746197`, kein Materialabzug ✓;
-  zweiter Druck → `job_complete`, 68 min, 6,71 g (bei Einheit mm) ✓ — der S1-Druck ist
+  zweiter Druck → `job_complete`, 68 min, 2,27 g ✓ — der S1-Druck ist
   entgegen erster Sichtung **komplett** in der Capture (inkl. `finished`).
-- **Kobra X**: Shark → `job_complete`, 55 min, 19,32 g (mm), JobId = `localtask`-UUID ✓;
+- **Kobra X**: Shark → `job_complete`, 55 min, **6,53 g** (deckungsgleich mit den „6 g"
+  aus dem Anycubic-App-Auftragsbericht ✓), JobId = `localtask`-UUID ✓;
   ACE-Slots mit Material/Farbe/Rest-% korrekt gemappt ✓.
 - Idle-Capture: keine Fehl-Events ✓.
 
 ## Nächste Schritte
 
-1. `supplies_usage`-Einheit bestätigen (Tester-Rückfrage läuft) → ggf. `SUPPLIES_UNIT`
-   in `src/adapters/anycubic.ts` auf `'mg'` stellen (eine Zeile).
-2. Verdrahten in die Bridge (`index.ts`-Adapter-Registry) + Frontend-Adapter-Option
+1. Verdrahten in die Bridge (`index.ts`-Adapter-Registry) + Frontend-Adapter-Option
    „Anycubic (LAN)" → dann Tester-Lauf mit echter Bridge.
-3. Später: `extfilbox` → Externe Spule (Contract-Erweiterung), ACE-Feuchte-Skala klären.
+2. Später: `extfilbox` → Externe Spule (Contract-Erweiterung), ACE-Feuchte-Skala klären.

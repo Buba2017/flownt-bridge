@@ -19,12 +19,11 @@ const QUERY_INTERVAL_MS = 15_000;
 const RECONNECT_DELAY_MS = 30_000;  // Discovery-Retry (LAN-Modus aus / Drucker aus)
 const STALE_AFTER_MS = 90_000;      // Watchdog: Queries laufen alle 15 s → 90 s ohne Report = tot
 
-// supplies_usage ist der kumulative Materialverbrauch aus den print-Reports.
-// Einheit noch NICHT endgültig bestätigt (Tester-Rückfrage läuft):
-//   Shark-Testdruck endete bei 6530, BierHelm bei 2268
-//   'mm' → 19,4 g bzw. 6,8 g  ·  'mg' → 6,5 g bzw. 2,3 g
-// Bis zur Bestätigung: 'mm' (deckt sich mit den HA-Integrationen). Umschalten = 1 Zeile.
-const SUPPLIES_UNIT: 'mm' | 'mg' = 'mm';
+// supplies_usage ist der kumulative Materialverbrauch aus den print-Reports — in MILLIGRAMM.
+// Bestätigt 2026-08-19 per Anycubic-App-Auftragsbericht der Testerin: Shark-Testdruck
+// (Kobra X, supplies_usage final 6530) wird dort als „6 g" ausgewiesen → mg (6,53 g).
+// ('mm' hätte 19,3 g ergeben; die frühe Doku-Annahme „direkt Gramm" war ebenfalls falsch.)
+const SUPPLIES_UNIT: 'mm' | 'mg' = 'mg';
 
 interface AnycubicCredentials {
   broker?: string;
