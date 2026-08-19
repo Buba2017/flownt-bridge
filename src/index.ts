@@ -2,6 +2,7 @@ import open from 'open';
 import { loadMultiConfig, PrinterConfig, newPrinterId } from './config.js';
 import { MoonrakerAdapter } from './adapters/moonraker.js';
 import { PrusaLinkAdapter } from './adapters/prusa.js';
+import { AnycubicAdapter } from './adapters/anycubic.js';
 import { BambuAdapter } from './adapters/bambu.js';
 import { startServer, printerStates, PrinterBridgeState } from './server.js';
 import { runBridge } from './bridge.js';
@@ -23,6 +24,9 @@ function buildAdapter(cfg: PrinterConfig): Adapter {
   }
   if (cfg.adapterType === 'prusa') {
     return new PrusaLinkAdapter(cfg.adapterUrl, cfg.adapterApiKey);
+  }
+  if (cfg.adapterType === 'anycubic') {
+    return new AnycubicAdapter(cfg.adapterUrl, cfg.id);
   }
   throw new Error(`Unbekannter Adapter: ${cfg.adapterType}`);
 }

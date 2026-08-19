@@ -48,6 +48,7 @@ interface Tr {
   paused: string; lastUpdate: string; noEvents: string; events: string;
   bed: string; tokenRequired: string; tokenInvalid: string; bambuFieldsRequired: string;
   moonrakerUrlRequired: string; prusaFieldsRequired: string; prusaApiKeyHint: string;
+  anycubicIpRequired: string; anycubicHint: string;
   nameRequired: string; confirmDelete: string;
   smartPlug: string; smartPlugIp: string; smartPlugHint: string;
   roleQ: string; roleHint: string; roleMonitor: string; roleMonitorD: string;
@@ -103,6 +104,8 @@ const T: Record<BridgeLang, Tr> = {
     moonrakerUrlRequired: 'Bitte Drucker-URL eingeben.',
     prusaFieldsRequired: 'Bitte Drucker-URL und API Key eingeben.',
     prusaApiKeyHint: 'IP und API Key findest du am Drucker-Display unter Einstellungen → Netzwerk → PrusaLink.',
+    anycubicIpRequired: 'Bitte die IP-Adresse des Druckers eingeben.',
+    anycubicHint: 'Am Drucker-Display den LAN-Modus einschalten (Einstellungen → Netzwerk). Die IP steht dort ebenfalls. Kein Passwort nötig — die Bridge holt die Zugangsdaten automatisch vom Drucker.',
     nameRequired: 'Bitte einen Namen eingeben.',
     confirmDelete: 'Drucker wirklich löschen?',
     smartPlug: 'Smart-Plug / Strommessung (optional)',
@@ -170,6 +173,8 @@ const T: Record<BridgeLang, Tr> = {
     moonrakerUrlRequired: 'Please enter the printer URL.',
     prusaFieldsRequired: 'Please enter the printer URL and API key.',
     prusaApiKeyHint: 'Find IP and API key on the printer display under Settings → Network → PrusaLink.',
+    anycubicIpRequired: 'Please enter the printer\'s IP address.',
+    anycubicHint: 'Enable LAN mode on the printer display (Settings → Network). You\'ll find the IP there too. No password needed — the bridge fetches the credentials from the printer automatically.',
     nameRequired: 'Please enter a name.',
     confirmDelete: 'Really delete this printer?',
     smartPlug: 'Smart plug / power metering (optional)',
@@ -232,7 +237,7 @@ function html(title: string, body: string, autoRefresh = false): string {
   .green { background: #10b981; } .gray { background: #444; } .red { background: #ef4444; } .yellow { background: #f59e0b; }
   .row { display: flex; gap: 1rem; }
   .row > div { flex: 1; }
-  #adapter-bambu, #adapter-moonraker, #adapter-prusa { display: none; }
+  #adapter-bambu, #adapter-moonraker, #adapter-prusa, #adapter-anycubic { display: none; }
   .printer-header { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 1rem; }
   .printer-name { font-size: 0.95rem; font-weight: 700; flex: 1; }
   .stat-box { background: #111; border-radius: 10px; padding: 0.875rem; margin-bottom: 0.75rem; }
@@ -385,7 +390,7 @@ function statusPage(): string {
       ? state.lastPushAt.toLocaleTimeString(cfg.language === 'de' ? 'de-DE' : 'en-GB')
       : '–';
 
-    const adapterLabel = printer.adapterType === 'bambu' ? 'Bambu Lab' : printer.adapterType === 'prusa' ? 'Prusa Link' : 'Moonraker';
+    const adapterLabel = printer.adapterType === 'bambu' ? 'Bambu Lab' : printer.adapterType === 'prusa' ? 'Prusa Link' : printer.adapterType === 'anycubic' ? 'Anycubic (LAN)' : 'Moonraker';
 
     // ETA
     let etaStr = '';
@@ -492,7 +497,7 @@ function setupListPage(): string {
   const rows = cfg.printers.length === 0
     ? `<div class="empty">${t.noPrinters}</div>`
     : cfg.printers.map(p => {
-        const adapterLabel = p.adapterType === 'bambu' ? 'Bambu Lab' : p.adapterType === 'prusa' ? 'Prusa Link' : 'Moonraker';
+        const adapterLabel = p.adapterType === 'bambu' ? 'Bambu Lab' : p.adapterType === 'prusa' ? 'Prusa Link' : p.adapterType === 'anycubic' ? 'Anycubic (LAN)' : 'Moonraker';
         const state = printerStates.get(p.id);
         const dotClass = !state?.running ? 'gray' : state.snapshot?.status === 'printing' ? 'green' : 'green';
         return `<div class="list-row">
@@ -552,6 +557,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
   const vBambuSerial = escAttr(printer?.adapterType === 'bambu' ? printer.adapterSerial : (!printer && isBambu ? prefill?.serial ?? '' : ''));
   const vMoonUrl = escAttr(printer?.adapterType === 'moonraker' ? printer.adapterUrl : (!printer && adapter === 'moonraker' ? prefill?.url ?? '' : ''));
   const vPrusaUrl = escAttr(printer?.adapterType === 'prusa' ? printer.adapterUrl : (!printer && adapter === 'prusa' ? prefill?.url ?? '' : ''));
+  const vAnycubicUrl = escAttr(printer?.adapterType === 'anycubic' ? printer.adapterUrl : (!printer && adapter === 'anycubic' ? prefill?.url ?? '' : ''));
   const prefilled = !isEdit && !!(prefill?.token || prefill?.name);
 
   return html(title, `
@@ -580,6 +586,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <option value="bambu"      ${isBambu ? 'selected' : ''}>Bambu Lab (X1, P1, A1, H2D, …)</option>
       <option value="moonraker"  ${adapter === 'moonraker' ? 'selected' : ''}>Moonraker / Klipper</option>
       <option value="prusa"      ${adapter === 'prusa' ? 'selected' : ''}>Prusa Link (MK4, XL, MINI, Core One)</option>
+      <option value="anycubic"   ${adapter === 'anycubic' ? 'selected' : ''}>Anycubic LAN (Kobra S1, Kobra X, …)</option>
     </select>
 
     <div id="adapter-bambu">
@@ -614,6 +621,12 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <p class="hint">${t.prusaApiKeyHint}</p>
     </div>
 
+    <div id="adapter-anycubic">
+      <label>${t.ipAddress}</label>
+      <input name="anycubicUrl" placeholder="192.168.1.100" value="${vAnycubicUrl}"${prefilled && adapter === 'anycubic' ? ' autofocus' : ''}/>
+      <p class="hint">${t.anycubicHint}</p>
+    </div>
+
     <hr class="sep"/>
     <div class="section-label" style="margin-bottom:0.625rem;">${t.smartPlug}</div>
     <label>${t.smartPlugIp}</label>
@@ -628,6 +641,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
     document.getElementById('adapter-bambu').style.display     = val === 'bambu'      ? 'block' : 'none';
     document.getElementById('adapter-moonraker').style.display = val === 'moonraker'  ? 'block' : 'none';
     document.getElementById('adapter-prusa').style.display     = val === 'prusa'      ? 'block' : 'none';
+    document.getElementById('adapter-anycubic').style.display  = val === 'anycubic'   ? 'block' : 'none';
   }
   switchAdapter(document.getElementById('adapterTypeSelect').value);
 </script>`);
@@ -640,7 +654,7 @@ function parseForm(
   id: string,
 ): { cfg: PrinterConfig | null; error?: string } {
   const t = tr();
-  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
+  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, anycubicUrl, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
   if (!name?.trim())   return { cfg: null, error: t.nameRequired };
   if (!token?.trim())  return { cfg: null, error: t.tokenRequired };
   // Der Flownt-Auth-Token ist eine UUID (DB-Spalte uuid). Das Passwortfeld ist blind —
@@ -650,11 +664,14 @@ function parseForm(
     return { cfg: null, error: t.tokenInvalid };
   const isBambu = adapterType === 'bambu';
   const isPrusa = adapterType === 'prusa';
+  const isAnycubic = adapterType === 'anycubic';
   if (isBambu  && (!bambuUrl?.trim() || !bambuSerial?.trim() || !bambuCode?.trim()))
     return { cfg: null, error: t.bambuFieldsRequired };
   if (isPrusa  && (!prusaUrl?.trim() || !prusaKey?.trim()))
     return { cfg: null, error: t.prusaFieldsRequired };
-  if (!isBambu && !isPrusa && !moonrakerUrl?.trim())
+  if (isAnycubic && !anycubicUrl?.trim())
+    return { cfg: null, error: t.anycubicIpRequired };
+  if (!isBambu && !isPrusa && !isAnycubic && !moonrakerUrl?.trim())
     return { cfg: null, error: t.moonrakerUrlRequired };
 
   return {
@@ -662,9 +679,9 @@ function parseForm(
       id,
       name:              name.trim(),
       flowntAuthToken:   token.trim(),
-      adapterType:       isBambu ? 'bambu' : isPrusa ? 'prusa' : 'moonraker',
-      adapterUrl:        isBambu ? bambuUrl.trim() : isPrusa ? prusaUrl.trim() : moonrakerUrl.trim(),
-      adapterApiKey:     isBambu ? bambuCode.trim() : isPrusa ? prusaKey.trim() : (moonrakerKey ?? '').trim(),
+      adapterType:       isBambu ? 'bambu' : isPrusa ? 'prusa' : isAnycubic ? 'anycubic' : 'moonraker',
+      adapterUrl:        isBambu ? bambuUrl.trim() : isPrusa ? prusaUrl.trim() : isAnycubic ? anycubicUrl.trim() : moonrakerUrl.trim(),
+      adapterApiKey:     isBambu ? bambuCode.trim() : isPrusa ? prusaKey.trim() : isAnycubic ? '' : (moonrakerKey ?? '').trim(),
       adapterSerial:     isBambu ? bambuSerial.trim() : '',
       pollingIntervalMs: 30_000,
       ...(isBambu && bambuCloudEmail?.trim()    ? { bambuCloudEmail:    bambuCloudEmail.trim()    } : {}),

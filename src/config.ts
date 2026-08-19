@@ -13,7 +13,7 @@ export interface PrinterConfig {
   id: string;
   name: string;
   flowntAuthToken: string;
-  adapterType: 'bambu' | 'moonraker' | 'prusa';
+  adapterType: 'bambu' | 'moonraker' | 'prusa' | 'anycubic';
   adapterUrl: string;
   adapterApiKey: string;
   adapterSerial: string;
@@ -43,7 +43,7 @@ function migrate(raw: Record<string, unknown>): MultiConfig {
     id: randomUUID(),
     name: raw.adapterType === 'bambu' ? 'Bambu Lab Drucker' : 'Klipper Drucker',
     flowntAuthToken: (raw.flowntAuthToken ?? '') as string,
-    adapterType: (raw.adapterType ?? 'bambu') as 'bambu' | 'moonraker' | 'prusa',
+    adapterType: (raw.adapterType ?? 'bambu') as PrinterConfig['adapterType'],
     adapterUrl: (raw.adapterUrl ?? '') as string,
     adapterApiKey: (raw.adapterApiKey ?? '') as string,
     adapterSerial: (raw.adapterSerial ?? '') as string,
