@@ -169,10 +169,12 @@ export async function runBridge(
 
       prevStatus = snapshot.status;
 
-      // Aktiven physischen AMS-Slot während des Drucks merken (0–15; ≥254 = externe Spule, ignorieren)
+      // Aktiven physischen AMS-Slot während des Drucks merken (0–15). 254 = externe Spule
+      // wird BEWUSST mitgemerkt: vorher wurde sie ignoriert, wodurch ein Externe-Spule-Druck
+      // den veralteten AMS-Slot des VORHERIGEN Drucks erbte und die falsche Spule abbuchte.
       if (snapshot.status === 'printing'
           && typeof snapshot.activeMqttSlot === 'number'
-          && snapshot.activeMqttSlot >= 0 && snapshot.activeMqttSlot < 16) {
+          && ((snapshot.activeMqttSlot >= 0 && snapshot.activeMqttSlot < 16) || snapshot.activeMqttSlot === 254)) {
         lastActiveSlot = snapshot.activeMqttSlot;
       }
       // AMS-Status + ams_mapping während des Drucks merken (kommen nicht in jeder MQTT-Nachricht).
@@ -215,7 +217,9 @@ export async function runBridge(
       if (!mappedByAmsMapping && eventType === 'job_complete' && snapshot.parsedFilamentWeights?.length === 1) {
         const fw = snapshot.parsedFilamentWeights[0];
         if (lastActiveSlot != null) {
-          const slotLabel = `${String.fromCharCode(65 + Math.floor(lastActiveSlot / 4))}${(lastActiveSlot % 4) + 1}`;
+          const slotLabel = lastActiveSlot === 254
+            ? 'Externe Spule'
+            : `${String.fromCharCode(65 + Math.floor(lastActiveSlot / 4))}${(lastActiveSlot % 4) + 1}`;
           if (fw.filamentIndex !== lastActiveSlot) {
             snapshot = { ...snapshot, parsedFilamentWeights: [{ ...fw, filamentIndex: lastActiveSlot }] };
           }
