@@ -302,7 +302,10 @@ export class BambuAdapter implements Adapter {
           // Anzeige ständig auf „unbekannt" zurück.
           activeMqttSlot: trayNow ?? this.snapshot.activeMqttSlot,
           amsHumidity: amsHumidity.length > 0 ? amsHumidity : this.snapshot.amsHumidity,
-          filamentMapping: (Array.isArray(p.mapping) && p.mapping.length > 0) ? p.mapping : this.snapshot.filamentMapping,
+          // Mapping ist JOB-Zustand: bei neuem Druck verwerfen (wie parsedFilamentWeights).
+          // Sonst erbt ein Druck OHNE eigenes Mapping (externe Spule!) das Mapping des
+          // Vordrucks und der Verbrauch wird dessen AMS-Slot zugeordnet (Bug Test 3).
+          filamentMapping: (Array.isArray(p.mapping) && p.mapping.length > 0) ? p.mapping : (isNewPrint ? undefined : this.snapshot.filamentMapping),
           parsedFilamentWeights,
         };
 

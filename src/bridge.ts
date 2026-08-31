@@ -161,6 +161,12 @@ export async function runBridge(
       if (snapshot.status === 'printing' && prevStatus !== 'printing' && prevStatus !== 'paused') {
         printStartedAt = Date.now();
         energyStartWh = lastEnergyWh; // Energiezähler-Stand bei Druckstart merken
+        // JOB-Zustand des Vordrucks verwerfen: Das ams_mapping gehört zum jeweiligen Druck.
+        // Ohne Reset erbte ein Druck ohne eigenes Mapping (externe Spule!) das Mapping des
+        // Vordrucks — der Mapping-Pfad hat Buchungs-Vorrang und ordnete den Verbrauch dem
+        // alten AMS-Slot zu (Bug Test 3). lastActiveSlot bleibt bewusst stehen (254 kommt
+        // schon in der Vorbereitung, vor diesem Übergang).
+        lastFilamentMapping = [];
         addEvent(cfg.id, 'info', `Druck gestartet: ${snapshot.printFile ?? '–'}`);
       }
 
