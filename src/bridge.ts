@@ -169,13 +169,20 @@ export async function runBridge(
 
       prevStatus = snapshot.status;
 
-      // Aktiven physischen AMS-Slot während des Drucks merken (0–15). 254 = externe Spule
-      // wird BEWUSST mitgemerkt: vorher wurde sie ignoriert, wodurch ein Externe-Spule-Druck
-      // den veralteten AMS-Slot des VORHERIGEN Drucks erbte und die falsche Spule abbuchte.
-      if (snapshot.status === 'printing'
-          && typeof snapshot.activeMqttSlot === 'number'
-          && ((snapshot.activeMqttSlot >= 0 && snapshot.activeMqttSlot < 16) || snapshot.activeMqttSlot === 254)) {
+      // Aktiven physischen Slot merken, SOBALD der Drucker ihn meldet (0–15 = AMS-Slot,
+      // 254 = externe Spule; 255 = kein Tray → ignorieren, letzter bekannter zählt).
+      // BEWUSST ohne printing-Gate: Bambu sendet Teil-Updates — der Tray-Wechsel auf 254
+      // kommt oft schon in der Druckvorbereitung (Laden/Aufheizen) und wird während des
+      // Drucks nicht wiederholt. Mit Gate blieb dann der Slot des VORHERIGEN Drucks
+      // stehen und der Externe-Spule-Verbrauch landete auf der falschen AMS-Spule.
+      if (typeof snapshot.activeMqttSlot === 'number'
+          && ((snapshot.activeMqttSlot >= 0 && snapshot.activeMqttSlot < 16) || snapshot.activeMqttSlot === 254)
+          && lastActiveSlot !== snapshot.activeMqttSlot) {
         lastActiveSlot = snapshot.activeMqttSlot;
+        // Sichtbare Diagnose im Ereignis-Log: welcher Slot würde aktuell gebucht?
+        const lbl = lastActiveSlot === 254 ? 'Externe Spule'
+          : `${String.fromCharCode(65 + Math.floor(lastActiveSlot / 4))}${(lastActiveSlot % 4) + 1}`;
+        addEvent(cfg.id, 'info', `Aktiver Filament-Slot: ${lbl}`);
       }
       // AMS-Status + ams_mapping während des Drucks merken (kommen nicht in jeder MQTT-Nachricht).
       if (snapshot.status === 'printing' && snapshot.amsSlots?.length) {
