@@ -54,6 +54,7 @@ interface Tr {
   roleLabel: string; roleLabelD: string; roleBoth: string; roleBothD: string;
   changeRole: string; labelTitle: string; labelPrinterLbl: string;
   labelNone: string; labelTest: string; labelReady: string; refresh: string;
+  extSpool: string; extSpoolActive: string;
 }
 
 const T: Record<BridgeLang, Tr> = {
@@ -123,6 +124,8 @@ const T: Record<BridgeLang, Tr> = {
     labelTest: 'Test-Druck',
     labelReady: 'Bereit für Etikettendruck aus Flownt.',
     refresh: 'Aktualisieren',
+    extSpool: 'Externe Spule',
+    extSpoolActive: 'Aktiv — Filamentverbrauch wird der externen Spule zugeordnet.',
   },
   en: {
     bridge: 'Flownt Bridge',
@@ -190,6 +193,8 @@ const T: Record<BridgeLang, Tr> = {
     labelTest: 'Test print',
     labelReady: 'Ready for label printing from Flownt.',
     refresh: 'Refresh',
+    extSpool: 'External spool',
+    extSpoolActive: 'Active — filament usage will be booked to the external spool.',
   },
 } as const;
 
@@ -429,6 +434,18 @@ function statusPage(): string {
       amsHtml = `<div class="stat-box" style="margin-bottom:0.75rem;">
         <div class="section-label">AMS</div>
         ${unitRows}
+      </div>`;
+    }
+
+    // Aktive externe Spule (254) sichtbar machen — der Verbrauch des laufenden/nächsten
+    // Drucks würde der externen Spule zugeordnet, nicht einem AMS-Slot.
+    if (snap?.activeMqttSlot === 254) {
+      amsHtml += `<div class="stat-box" style="margin-bottom:0.75rem;">
+        <div class="section-label">${t.extSpool}</div>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <div style="width:16px;height:16px;border-radius:50%;background:#888;box-shadow:0 0 0 2px #ff7a2f;border:1.5px solid rgba(128,128,128,0.5);"></div>
+          <span style="font-size:0.78rem;">${t.extSpoolActive}</span>
+        </div>
       </div>`;
     }
 

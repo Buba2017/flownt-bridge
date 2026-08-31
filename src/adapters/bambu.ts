@@ -297,7 +297,10 @@ export class BambuAdapter implements Adapter {
           tempBed: p.bed_temper,
           etaSec: p.mc_remaining_time != null ? p.mc_remaining_time * 60 : undefined,
           amsSlots: amsSlots.length > 0 ? amsSlots : this.snapshot.amsSlots,
-          activeMqttSlot: trayNow,
+          // Sticky: Bambu sendet Teil-Updates — tray_now fehlt in den meisten Deltas.
+          // Ohne Carry-forward fiele der aktive Slot (auch 254 = externe Spule) in der
+          // Anzeige ständig auf „unbekannt" zurück.
+          activeMqttSlot: trayNow ?? this.snapshot.activeMqttSlot,
           amsHumidity: amsHumidity.length > 0 ? amsHumidity : this.snapshot.amsHumidity,
           filamentMapping: (Array.isArray(p.mapping) && p.mapping.length > 0) ? p.mapping : this.snapshot.filamentMapping,
           parsedFilamentWeights,
