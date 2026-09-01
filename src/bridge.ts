@@ -209,21 +209,32 @@ export async function runBridge(
       let mappedByAmsMapping = false;
       if (eventType === 'job_complete' && snapshot.parsedFilamentWeights?.length && lastFilamentMapping.length) {
         let cnt = 0;
+        // Der Mapping-Pfad zählt nur, wenn er MINDESTENS EINE verwertbare Zuordnung liefert.
+        // Sonst (z. B. Externe-Spule-Druck: Mapping ohne Eintrag für die Slicer-Filament-id)
+        // wurde der Slicer-Index bisher ROH als AMS-Index durchgereicht — bei vielen
+        // Slicer-Filamenten zeigt der auf einen realen fremden Slot (Bug Test 3: id 11 → C4).
+        let validCount = 0;
         const remapped = snapshot.parsedFilamentWeights.map(fw => {
           const code = lastFilamentMapping[fw.filamentIndex - 1];
           if (code == null) return fw;
-          if (code >= 65535) return { ...fw, filamentIndex: 254 }; // ungenutzt/externe Spule → kein AMS-Slot-Link
+          // Bambu: -1 = kein AMS (externe Spule), ≥65535 = ungenutzt/extern → beides 254
+          if (code < 0 || code >= 65535) { validCount++; return { ...fw, filamentIndex: 254 }; }
           const amsUnit = (code >> 8) & 0xFF;
           const slot = code & 0xFF;
           if (amsUnit > 3 || slot > 3) return fw; // unerwartete Kodierung → roh lassen
+          validCount++;
           const gi = amsUnit * 4 + slot;
           if (gi !== fw.filamentIndex) cnt++;
           return { ...fw, filamentIndex: gi };
         });
-        snapshot = { ...snapshot, parsedFilamentWeights: remapped };
-        mappedByAmsMapping = true;
-        slotSource = 'ams';
-        addEvent(cfg.id, 'info', `Filament-Zuordnung via Bambu ams_mapping (${remapped.length} Filament(e), ${cnt} korrigiert)`);
+        if (validCount > 0) {
+          snapshot = { ...snapshot, parsedFilamentWeights: remapped };
+          mappedByAmsMapping = true;
+          slotSource = 'ams';
+          addEvent(cfg.id, 'info', `Filament-Zuordnung via Bambu ams_mapping (${remapped.length} Filament(e), ${cnt} korrigiert)`);
+        } else {
+          addEvent(cfg.id, 'info', 'ams_mapping ohne verwertbare Zuordnung — Fallback: aktiver Slot');
+        }
       }
 
       // Fallback Einfarb (nur ohne ams_mapping): Verbrauch dem aktiven physischen AMS-Slot zuordnen.
