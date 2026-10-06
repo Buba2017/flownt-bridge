@@ -27,6 +27,10 @@ export interface PrinterConfig {
   // Optionaler Smart-Plug zur echten Strommessung (Shelly Gen1 + Gen2, Auto-Erkennung).
   smartPlugType?: SmartPlugType;
   smartPlugUrl?: string; // IP/Host des Shelly im LAN, z. B. "192.168.178.50"
+  // Set for printers assigned centrally in Flownt (paired bridge, see link/sync.ts).
+  // Managed printers are added, updated and removed by the sync; others are left alone.
+  flowntPrinterId?: string;
+  managed?: boolean;
 }
 
 export type BridgeRole = 'monitor' | 'label' | 'both';
@@ -37,9 +41,11 @@ export interface MultiConfig {
   printers: PrinterConfig[];
   role?: BridgeRole;       // was diese Bridge-Instanz tun soll (Web-UI-Rollenwahl, Phase 2)
   labelPrinter?: string;   // ausgewählter Etikettendrucker (System-/CUPS-Name)
+  // Pairing with Flownt (bridge-sync). The token authenticates this bridge.
+  link?: { bridgeId: string; bridgeToken: string; name: string; pairedAt: string };
 }
 
-const CONFIG_DIR  = join(homedir(), '.flownt-bridge');
+export const CONFIG_DIR  = join(homedir(), '.flownt-bridge');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
 function migrate(raw: Record<string, unknown>): MultiConfig {

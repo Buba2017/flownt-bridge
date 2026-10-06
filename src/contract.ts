@@ -108,3 +108,94 @@ export interface IngestBody {
   cloud_weight_g?: number;
   energy_wh?: number;
 }
+
+// ── Bridge link (bridge-sync): pairing, central configuration, discovery ──────────
+//
+// A bridge is paired once with a one-time code from Flownt (Printers → Bridge). After
+// that it syncs periodically: it reports LAN-discovered printers and per-printer state,
+// and receives the printers assigned to it plus printer secrets (LAN access codes)
+// encrypted to its own RSA-OAEP (SHA-256) public key. Flownt never stores secrets in
+// plaintext; a delivered secret is deleted once the bridge acknowledges it.
+
+/** A printer seen on the LAN (Bambu SSDP announcement). */
+export interface DiscoveredDevice {
+  serial: string;
+  /** Vendor model code from the announcement, e.g. "BL-P001" (X1C), "N6" (X2D). */
+  model_code: string | null;
+  /** Device name as set on the printer, e.g. "3DP-1 (H2C)". */
+  name: string | null;
+  ip: string;
+  vendor: 'bambu';
+  seen_at: string;
+}
+
+export interface BridgePairRequest {
+  action: 'pair';
+  pairing_code: string;
+  /** SPKI PEM of the bridge's RSA-OAEP key pair. */
+  public_key: string;
+  name?: string;
+  bridge_version?: string;
+}
+
+export interface BridgePairResponse {
+  bridge_id: string;
+  bridge_token: string;
+  name: string;
+}
+
+/** Per-printer state the bridge reports back (no secrets). */
+export interface LinkedPrinterState {
+  printer_id: string;
+  has_access_code: boolean;
+  connected: boolean;
+}
+
+export interface BridgeSyncRequest {
+  action: 'sync';
+  bridge_token: string;
+  bridge_version?: string;
+  discovered: DiscoveredDevice[];
+  printers: LinkedPrinterState[];
+  /** Secret ids applied since the last sync; Flownt deletes them. */
+  acked_secrets: string[];
+}
+
+/** A printer assigned to this bridge in Flownt. */
+export interface LinkedPrinterConfig {
+  printer_id: string;
+  name: string;
+  adapter_type: 'bambu' | 'moonraker' | 'prusa';
+  adapter_url: string;
+  device_serial: string;
+  /** Per-printer ingest token (printer_bridge_configs.auth_token). */
+  auth_token: string;
+  enabled: boolean;
+}
+
+export interface BridgeSecret {
+  id: string;
+  printer_id: string;
+  kind: 'access_code';
+  /** base64 RSA-OAEP(SHA-256) ciphertext for the bridge's public key. */
+  ciphertext: string;
+}
+
+export interface BridgeSyncResponse {
+  bridge_id: string;
+  name: string;
+  printers: LinkedPrinterConfig[];
+  secrets: BridgeSecret[];
+}
+
+/**
+ * Bambu SSDP model codes → model names in the printer catalog (best effort; unknown
+ * codes fall back to the model in parentheses of the device name, e.g. "3DP-1 (H2C)").
+ */
+export const BAMBU_MODEL_CODES: Readonly<Record<string, string>> = {
+  'BL-P001': 'X1C', 'BL-P002': 'X1', 'C13': 'X1E',
+  'C11': 'P1P', 'C12': 'P1S',
+  'N1': 'A1 mini', 'N2S': 'A1',
+  'O1D': 'H2D', 'O1C2': 'H2C',
+  'N6': 'X2D',
+};

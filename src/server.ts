@@ -15,6 +15,7 @@ import {
 import { Adapter, PrinterCommand, PrinterSnapshot } from './adapters/types.js';
 import { getEventLog } from './events.js';
 import { BRIDGE_VERSION } from './version.js';
+import { linkStatus } from './link/sync.js';
 import { CameraRelay } from './camera/relay.js';
 import { registerCameraRoutes } from './camera/routes.js';
 
@@ -38,6 +39,8 @@ export interface ServerCallbacks {
   onAdd(cfg: PrinterConfig): void;
   onUpdate(cfg: PrinterConfig): void;
   onDelete(id: string): void;
+  /** Pair with Flownt using a one-time code; resolves to an error message or null. */
+  onPair(code: string, name?: string): Promise<string | null>;
 }
 
 // ── Translations ──────────────────────────────────────────────────────────────
@@ -235,6 +238,14 @@ const TA = {
     notInBridge: 'Weitere Drucker in deinem Bambu-Konto (noch nicht in dieser Bridge):',
     done: 'Fertig',
     noneMissing: 'Alle Bambu-Drucker haben einen Access Code.',
+    pairTitle: 'Mit Flownt koppeln',
+    pairHint: 'Erzeuge in Flownt unter „Drucker & Geräte" → „Bridge koppeln" einen Kopplungscode. Danach kommen Drucker und Access Codes automatisch aus Flownt — hier muss nichts mehr eingetragen werden.',
+    pairCode: 'Kopplungscode',
+    pairName: 'Name dieser Bridge (optional)',
+    pairBtn: 'Koppeln',
+    pairBanner: 'Diese Bridge ist noch nicht mit Flownt gekoppelt.',
+    linkedAs: (n: string) => `Mit Flownt gekoppelt als „${n}"`,
+    lastSync: 'letzter Abgleich',
   },
   en: {
     missing: 'Access code missing',
@@ -263,9 +274,45 @@ const TA = {
     notInBridge: 'More printers in your Bambu account (not in this bridge yet):',
     done: 'Done',
     noneMissing: 'All Bambu printers have an access code.',
+    pairTitle: 'Pair with Flownt',
+    pairHint: 'Create a pairing code in Flownt under "Printers & Devices" → "Pair bridge". After that, printers and access codes come from Flownt automatically — nothing needs to be entered here.',
+    pairCode: 'Pairing code',
+    pairName: 'Name of this bridge (optional)',
+    pairBtn: 'Pair',
+    pairBanner: 'This bridge is not paired with Flownt yet.',
+    linkedAs: (n: string) => `Paired with Flownt as "${n}"`,
+    lastSync: 'last sync',
   },
 } as const;
 function ta() { return TA[getLang()]; }
+
+// Pairing state: prompt to pair, or show which Flownt bridge this is.
+function linkBanner(): string {
+  const a = ta();
+  const { link, lastSyncAt, lastSyncError } = linkStatus();
+  if (!link) {
+    return `<div class="card card-sm" style="margin-bottom:1rem;">
+      <div style="font-weight:700;margin-bottom:0.35rem;">🔗 ${a.pairBanner}</div>
+      <a href="/pair" class="btn">${a.pairTitle}</a></div>`;
+  }
+  const when = lastSyncAt ? lastSyncAt.toLocaleTimeString(getLang() === 'de' ? 'de-DE' : 'en-GB') : '–';
+  return `<p class="hint" style="margin:0 0 1rem;">🔗 ${escAttr(a.linkedAs(link.name))} · ${a.lastSync}: ${when}${lastSyncError ? ` · ⚠ ${escAttr(lastSyncError)}` : ''}</p>`;
+}
+
+function pairPage(error?: string): string {
+  const a = ta();
+  return simplePage(a.pairTitle, `
+  <h1>${a.pairTitle}</h1>
+  ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
+  <p class="hint">${a.pairHint}</p>
+  <form method="POST" action="/pair">
+    <label>${a.pairCode}</label>
+    <input name="code" placeholder="XXXXX-XXXXX" autocomplete="off" required autofocus/>
+    <label>${a.pairName}</label>
+    <input name="name" placeholder="z. B. Fertigung / Werkstatt"/>
+    <button class="btn btn-full" type="submit" style="margin-top:0.75rem;">${a.pairBtn}</button>
+  </form>`);
+}
 
 // Banner on status/setup pages when Bambu printers still lack an access code.
 function accessCodeBanner(printers: PrinterConfig[]): string {
@@ -582,6 +629,7 @@ function statusPage(): string {
     <a href="/setup/new" class="btn">${t.addPrinter}</a>
   </div>
 </div>
+${linkBanner()}
 ${accessCodeBanner(cfg.printers)}
 <div class="printer-grid">${cards}</div>`, true);
 }
@@ -1140,6 +1188,15 @@ export function startServer(callbacks: ServerCallbacks): void {
       saveMultiConfig(multi);
       for (const p of updated) callbacks.onUpdate(p);
     }
+    res.redirect('/');
+  });
+
+  app.get('/pair', (_req, res) => res.send(pairPage()));
+  app.post('/pair', async (req, res) => {
+    const { code, name } = req.body as { code?: string; name?: string };
+    if (!code?.trim()) return res.send(pairPage());
+    const error = await callbacks.onPair(code, name);
+    if (error) return res.send(pairPage(error));
     res.redirect('/');
   });
 

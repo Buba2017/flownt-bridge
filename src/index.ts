@@ -7,6 +7,8 @@ import { startServer, printerStates, PrinterBridgeState } from './server.js';
 import { runBridge } from './bridge.js';
 import { Adapter } from './adapters/types.js';
 import { BRIDGE_VERSION } from './version.js';
+import { startDiscovery } from './link/discovery.js';
+import { pair, startSyncLoop, syncNow, type LinkCallbacks } from './link/sync.js';
 
 const PORT = Number(process.env.FLOWNT_BRIDGE_PORT) || 7432;
 const URL  = `http://localhost:${PORT}`;
@@ -78,8 +80,7 @@ function stopPrinter(id: string): void {
   if (state) state.running = false;
 }
 
-// Start web UI
-startServer({
+const printerCallbacks: LinkCallbacks = {
   onAdd(cfg) {
     startPrinter(cfg);
   },
@@ -91,7 +92,40 @@ startServer({
     stopPrinter(id);
     printerStates.delete(id);
   },
+  isConnected(id) {
+    const s = printerStates.get(id);
+    return !!s?.running && !s.error && !!s.snapshot && s.snapshot.status !== 'offline';
+  },
+};
+
+// Start web UI
+startServer({
+  ...printerCallbacks,
+  async onPair(code, name) {
+    try {
+      await pair(code, name);
+      startSyncLoop(printerCallbacks);
+      await syncNow(printerCallbacks);
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  },
 });
+
+// LAN discovery runs for monitoring bridges; it only listens.
+const role = loadMultiConfig().role;
+if (role !== 'label') startDiscovery();
+
+// Linked to Flownt: printers and access codes come from there. A pairing code in the
+// environment pairs a headless bridge once (e.g. systemd EnvironmentFile).
+if (loadMultiConfig().link) {
+  startSyncLoop(printerCallbacks);
+} else if (process.env.FLOWNT_PAIRING_CODE?.trim()) {
+  pair(process.env.FLOWNT_PAIRING_CODE, process.env.FLOWNT_BRIDGE_NAME)
+    .then(() => startSyncLoop(printerCallbacks))
+    .catch(e => console.error(`[link] Kopplung mit FLOWNT_PAIRING_CODE fehlgeschlagen: ${(e as Error).message}`));
+}
 
 // Start all configured printers immediately
 const existing = loadMultiConfig();
