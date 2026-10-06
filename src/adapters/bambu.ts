@@ -185,6 +185,9 @@ export function activeTrayFromExtruder(dev: BambuPrint['device']): number | unde
   if (ext.snow === 65535) return 255;
   const unit = ext.snow >> 8;
   const slot = ext.snow & 0xFF;
+  // Slot 255 = no tray. Seen as 0xFEFF on X2D while a job starts (tray_now 255, the job
+  // then prints from AMS 0 slot 0) — it is not the external spool.
+  if (slot === 0xFF && unit !== 0xFF) return 255;
   if (unit === 254 || unit === 255) return 254;
   if (unit >= 128) return unit;
   return unit * 4 + slot;

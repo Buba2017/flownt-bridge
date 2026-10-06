@@ -8,7 +8,7 @@ import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
 import { defaultSender, getOutbox, Outbox, Sender } from './outbox.js';
 import { JobEnd, JobSession, JobSessionStore, JobTracker } from './job-session.js';
-import { isTrackedSlot, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
+import { EXTERNAL_SLOT, isTrackedSlot, ResolvedLine, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
 
 // Last preview delivered per printer config (object identity = one fetch of one job).
 const sentPreviews = new Map<string, PrinterSnapshot['printPreview']>();
@@ -115,42 +115,42 @@ async function buildTerminalBody(
   });
   for (const n of resolved.notes) addEvent(cfg.id, n.type, n.msg);
   // tray_uuid of the slot each line was printed from, as seen during the job.
-  const trayUuid = (index: number): string | null => {
-    if (resolved.slotSource !== 'ams') return null;
-    const slot = jobSlots.find(a => slotIndex(a.ams_unit, a.slot) === index);
+  const trayUuid = (line: ResolvedLine): string | null => {
+    if (line.source !== 'ams' || line.filamentIndex === EXTERNAL_SLOT) return null;
+    const slot = jobSlots.find(a => slotIndex(a.ams_unit, a.slot) === line.filamentIndex);
     return slot?.tray_uuid ?? null;
   };
   if (eventType === 'job_complete') {
-    if (resolved.weights.length) {
+    if (resolved.lines.length) {
       // Per material line the source-abstracted slot reference; filamentIndex stays as the
       // compat field the backend reads.
-      body.filament_weights = resolved.weights.map((fw): MaterialLine => ({
-        filamentIndex: fw.filamentIndex,
-        grams: fw.grams,
-        color: fw.color,
-        slotRef: { source: resolved.slotSource, value: fw.filamentIndex },
+      body.filament_weights = resolved.lines.map((l): MaterialLine => ({
+        filamentIndex: l.filamentIndex,
+        grams: l.grams,
+        color: l.color,
+        slotRef: { source: l.source, value: l.filamentIndex },
         measureSource: 'slicer_file',
-        estimated_grams: fw.grams,
-        tray_uuid: trayUuid(fw.filamentIndex),
+        estimated_grams: l.grams,
+        tray_uuid: trayUuid(l),
       }));
     }
     // Bambu cloud weight only when the print file gave nothing (its login mails a code).
-    if (!resolved.weights.length && bambuCloud && cfg.adapterSerial) {
+    if (!resolved.lines.length && bambuCloud && cfg.adapterSerial) {
       const cloudWeight = await bambuCloud.getLatestTaskWeightWithRetry(cfg.adapterSerial);
       if (cloudWeight != null) body.cloud_weight_g = cloudWeight;
     }
   } else {
     // Failed / cancelled: the part printed so far, estimated from the slicer weights.
     const fraction = printedFraction(s);
-    if (resolved.weights.length && fraction != null) {
-      body.filament_weights = resolved.weights.map((fw): MaterialLine => ({
-        filamentIndex: fw.filamentIndex,
-        grams: Math.round(fw.grams * fraction * 100) / 100,
-        color: fw.color,
-        slotRef: { source: resolved.slotSource, value: fw.filamentIndex },
+    if (resolved.lines.length && fraction != null) {
+      body.filament_weights = resolved.lines.map((l): MaterialLine => ({
+        filamentIndex: l.filamentIndex,
+        grams: Math.round(l.grams * fraction * 100) / 100,
+        color: l.color,
+        slotRef: { source: l.source, value: l.filamentIndex },
         measureSource: 'estimated_partial',
-        estimated_grams: fw.grams,
-        tray_uuid: trayUuid(fw.filamentIndex),
+        estimated_grams: l.grams,
+        tray_uuid: trayUuid(l),
       }));
     }
   }

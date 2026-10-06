@@ -8,19 +8,42 @@ import type { SlotRef } from './contract.js';
 //  1. Bambu print.mapping (mapping[id-1] → tray code (ams_id << 8) | slot) — deterministic.
 //  2. Single-filament job: the active physical slot (tray_now / extruder).
 //  3. Multi-filament job: unique colour match against the AMS state.
+// Only lines that were really resolved to a physical slot get slotRef.source 'ams'.
 
-/** Global slot number in Flownt: unit*4+slot (AMS), 254 = external spool. */
+export const EXTERNAL_SLOT = 254;
+export const NO_SLOT = 255;
+
+/** Global slot number in Flownt: unit*4+slot (AMS), the unit id for AMS HT (128+). */
 export function slotIndex(unit: number, slot: number): number {
-  return unit * 4 + slot;
+  return unit >= 128 ? unit : unit * 4 + slot;
+}
+
+/**
+ * Bambu tray code (ams_id << 8) | slot → global slot, as in print.mapping and
+ * device.extruder snow. Units 254/255 are the external spools (one per extruder on
+ * dual-nozzle printers), 65535 / -1 mean no AMS (external spool when the filament is
+ * used); slot 255 within a unit means "no tray". Returns null for codes it cannot place.
+ */
+export function decodeTrayCode(code: number): number | null {
+  if (!Number.isInteger(code)) return null;
+  if (code < 0 || code >= 65535) return EXTERNAL_SLOT;
+  const unit = (code >> 8) & 0xFF;
+  const slot = code & 0xFF;
+  if (unit === 254 || unit === 255) return EXTERNAL_SLOT;
+  if (unit >= 128) return unit;                // AMS HT: one tray per unit
+  if (unit < 16 && slot <= 3) return slotIndex(unit, slot);
+  return null;
 }
 
 /** Active slot values worth remembering (255 = no tray → keep the last known). */
 export function isTrackedSlot(v: number | null | undefined): boolean {
-  return typeof v === 'number' && ((v >= 0 && v < 16) || v === 254);
+  return typeof v === 'number' && Number.isInteger(v) && ((v >= 0 && v < 64) || (v >= 128 && v <= EXTERNAL_SLOT));
 }
 
 export function slotLabel(slot: number): string {
-  return slot === 254 ? 'Externe Spule' : `${String.fromCharCode(65 + Math.floor(slot / 4))}${(slot % 4) + 1}`;
+  if (slot === EXTERNAL_SLOT) return 'Externe Spule';
+  if (slot >= 128) return `AMS HT ${slot - 127}`;
+  return `${String.fromCharCode(65 + Math.floor(slot / 4))}${(slot % 4) + 1}`;
 }
 
 export interface MaterialContext {
@@ -29,81 +52,67 @@ export interface MaterialContext {
   amsSlots: AmsSlot[];
 }
 
+/** A slicer filament with the slot it was printed from (or its slicer index). */
+export type ResolvedLine = FilamentWeight & { source: SlotRef['source'] };
+
 export interface ResolvedMaterials {
-  weights: FilamentWeight[];
-  slotSource: SlotRef['source'];
+  lines: ResolvedLine[];
   notes: Array<{ type: 'info' | 'warn'; msg: string }>;
 }
 
+const normHex = (c?: string) => c ? '#' + c.replace(/^#/, '').replace(/^0x/i, '').slice(0, 6).toUpperCase() : '';
+
 export function resolveMaterials(input: FilamentWeight[], ctx: MaterialContext): ResolvedMaterials {
   const notes: ResolvedMaterials['notes'] = [];
-  let weights = input;
-  let slotSource: SlotRef['source'] = 'slicer_order';
-  let mappedByAmsMapping = false;
+  const raw = (fw: FilamentWeight): ResolvedLine => ({ ...fw, source: 'slicer_order' });
+  if (!input.length) return { lines: [], notes };
 
-  if (weights.length && ctx.mapping.length) {
-    let cnt = 0;
-    // The mapping only counts if it yields at least one usable assignment; otherwise
-    // (e.g. external spool: no entry for the slicer id) the raw slicer index would point
-    // at a foreign AMS slot.
-    let validCount = 0;
-    const remapped = weights.map(fw => {
+  // 1. print.mapping
+  if (ctx.mapping.length) {
+    let corrected = 0;
+    const lines = input.map((fw): ResolvedLine => {
       const code = ctx.mapping[fw.filamentIndex - 1];
-      if (code == null) return fw;
-      // Bambu: -1 = no AMS (external spool), ≥65535 = unused/external → both 254
-      if (code < 0 || code >= 65535) { validCount++; return { ...fw, filamentIndex: 254 }; }
-      const amsUnit = (code >> 8) & 0xFF;
-      const slot = code & 0xFF;
-      if (amsUnit > 3 || slot > 3) return fw; // unexpected encoding → keep raw
-      validCount++;
-      const gi = slotIndex(amsUnit, slot);
-      if (gi !== fw.filamentIndex) cnt++;
-      return { ...fw, filamentIndex: gi };
+      const slot = code == null ? null : decodeTrayCode(code);
+      if (slot == null) return raw(fw); // never pass a raw slicer index off as an AMS slot
+      if (slot !== fw.filamentIndex) corrected++;
+      return { ...fw, filamentIndex: slot, source: 'ams' };
     });
-    if (validCount > 0) {
-      weights = remapped;
-      mappedByAmsMapping = true;
-      slotSource = 'ams';
-      notes.push({ type: 'info', msg: `Filament-Zuordnung via Bambu ams_mapping (${remapped.length} Filament(e), ${cnt} korrigiert)` });
-    } else {
-      notes.push({ type: 'info', msg: 'ams_mapping ohne verwertbare Zuordnung — Fallback: aktiver Slot' });
+    const mapped = lines.filter(l => l.source === 'ams').length;
+    if (mapped > 0) {
+      notes.push({ type: 'info', msg: `Filament-Zuordnung via Bambu ams_mapping (${mapped}/${lines.length} Filament(e), ${corrected} korrigiert)` });
+      if (mapped < lines.length) notes.push({ type: 'warn', msg: `${lines.length - mapped} Filament(e) ohne ams_mapping-Eintrag — nach Slicer-Reihenfolge gemeldet` });
+      return { lines, notes };
     }
+    notes.push({ type: 'info', msg: 'ams_mapping ohne verwertbare Zuordnung — Fallback: aktiver Slot' });
   }
 
-  if (!mappedByAmsMapping && weights.length === 1) {
-    const fw = weights[0];
-    if (ctx.activeSlot != null) {
-      if (fw.filamentIndex !== ctx.activeSlot) weights = [{ ...fw, filamentIndex: ctx.activeSlot }];
-      slotSource = 'ams';
-      notes.push({ type: 'info', msg: `Filamentverbrauch → AMS-Slot ${slotLabel(ctx.activeSlot)} (${fw.grams} g)` });
-    } else {
-      notes.push({ type: 'warn', msg: 'Aktiver AMS-Slot unbekannt — Filament evtl. nicht verknüpft' });
+  // 2. single filament: the active physical slot
+  if (input.length === 1) {
+    const fw = input[0];
+    if (ctx.activeSlot != null && isTrackedSlot(ctx.activeSlot)) {
+      notes.push({ type: 'info', msg: `Filamentverbrauch → ${slotLabel(ctx.activeSlot)} (${fw.grams} g)` });
+      return { lines: [{ ...fw, filamentIndex: ctx.activeSlot, source: 'ams' }], notes };
     }
+    notes.push({ type: 'warn', msg: 'Aktiver AMS-Slot unbekannt — Filament evtl. nicht verknüpft' });
+    return { lines: [raw(fw)], notes };
   }
 
-  if (!mappedByAmsMapping && weights.length > 1) {
-    if (ctx.amsSlots.length) {
-      const normHex = (c?: string) => c ? '#' + c.replace(/^#/, '').replace(/^0x/i, '').slice(0, 6).toUpperCase() : '';
-      let remappedCount = 0;
-      const remapped = weights.map(fw => {
-        if (!fw.color) return fw;
-        const want = normHex(fw.color);
-        const matches = ctx.amsSlots.filter(s => normHex(s.color) === want);
-        if (matches.length === 1) {
-          const gi = slotIndex(matches[0].ams_unit, matches[0].slot);
-          if (gi !== fw.filamentIndex) { remappedCount++; return { ...fw, filamentIndex: gi }; }
-        }
-        return fw;
-      });
-      if (remappedCount > 0) {
-        weights = remapped;
-        slotSource = 'ams';
-        notes.push({ type: 'info', msg: `Mehrfarb-Druck: ${remappedCount} Filament(e) per Farbe dem AMS-Slot zugeordnet (Fallback)` });
-      }
-    } else {
-      notes.push({ type: 'warn', msg: 'Mehrfarb-Druck: kein ams_mapping/AMS-Status — Filamente evtl. nach Slicer-Reihenfolge zugeordnet' });
-    }
+  // 3. several filaments: unique colour match against the AMS (occupied slots only)
+  const slots = ctx.amsSlots.filter(s => s.material);
+  if (!slots.length) {
+    notes.push({ type: 'warn', msg: 'Mehrfarb-Druck: kein ams_mapping/AMS-Status — Filamente evtl. nach Slicer-Reihenfolge zugeordnet' });
+    return { lines: input.map(raw), notes };
   }
-
-  return { weights, slotSource, notes };
+  const lines = input.map((fw): ResolvedLine => {
+    if (!fw.color) return raw(fw);
+    const matches = slots.filter(s => normHex(s.color) === normHex(fw.color));
+    return matches.length === 1
+      ? { ...fw, filamentIndex: slotIndex(matches[0].ams_unit, matches[0].slot), source: 'ams' }
+      : raw(fw);
+  });
+  const matched = lines.filter(l => l.source === 'ams').length;
+  notes.push(matched === lines.length
+    ? { type: 'info', msg: `Mehrfarb-Druck: ${matched} Filament(e) per Farbe dem AMS-Slot zugeordnet (Fallback)` }
+    : { type: 'warn', msg: `Mehrfarb-Druck: ${matched}/${lines.length} Filament(e) per Farbe zugeordnet, Rest nach Slicer-Reihenfolge` });
+  return { lines, notes };
 }
