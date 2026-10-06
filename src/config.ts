@@ -46,6 +46,8 @@ export interface MultiConfig {
   // Extra browser origins allowed to call the bridge (e.g. a self-hosted Flownt app),
   // added in the setup UI. Defaults and FLOWNT_ALLOWED_ORIGINS apply in addition.
   allowedOrigins?: string[];
+  // Access codes of printers recently removed by the sync (24 h, see link/tombstones.ts).
+  removedSecrets?: Array<{ flowntPrinterId: string; adapterSerial?: string; adapterApiKey: string; removedAt: string }>;
 }
 
 export const CONFIG_DIR  = join(homedir(), '.flownt-bridge');

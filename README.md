@@ -207,6 +207,17 @@ WantedBy=multi-user.target
 
 ---
 
+## Paired bridges: protection against accidental printer removal
+
+A bridge paired with Flownt takes its printers from the `bridge-sync` function. If a sync
+would remove **all** managed printers or **more than half** of them (e.g. the backend
+briefly returns an empty list), the bridge keeps them and logs a warning; the removal is
+only applied after the same result was seen in 3 consecutive syncs spanning at least
+5 minutes. Access codes of removed printers are kept for 24 h (`removedSecrets` in
+`config.json`), so a printer that comes back gets its code again automatically.
+
+---
+
 ## Security model of the local API
 
 | Endpoint | Who may call it |

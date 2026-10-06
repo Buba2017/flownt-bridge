@@ -310,14 +310,19 @@ function ta() { return TA[getLang()]; }
 // Pairing state: prompt to pair, or show which Flownt bridge this is.
 function linkBanner(): string {
   const a = ta();
-  const { link, lastSyncAt, lastSyncError } = linkStatus();
+  const { link, lastSyncAt, lastSyncError, pendingRemoval } = linkStatus();
   if (!link) {
     return `<div class="card card-sm" style="margin-bottom:1rem;">
       <div style="font-weight:700;margin-bottom:0.35rem;">🔗 ${a.pairBanner}</div>
       <a href="/pair" class="btn">${a.pairTitle}</a></div>`;
   }
   const when = lastSyncAt ? lastSyncAt.toLocaleTimeString(getLang() === 'de' ? 'de-DE' : 'en-GB') : '–';
-  return `<p class="hint" style="margin:0 0 1rem;">🔗 ${escAttr(a.linkedAs(link.name))} · ${a.lastSync}: ${when}${lastSyncError ? ` · ⚠ ${escAttr(lastSyncError)}` : ''}</p>`;
+  const held = pendingRemoval
+    ? `<div class="err-banner" style="max-width:960px;width:100%;">⚠ ${getLang() === 'de'
+      ? `Flownt meldet ${pendingRemoval.printerIds.length} Drucker als entfernt. Zum Schutz vor Fehlern bleiben sie erhalten, bis sich das über mehrere Abgleiche (≥ 5 min) bestätigt.`
+      : `Flownt reports ${pendingRemoval.printerIds.length} printers as removed. To guard against errors they are kept until repeated syncs (≥ 5 min) confirm it.`}</div>`
+    : '';
+  return `<p class="hint" style="margin:0 0 1rem;">🔗 ${escAttr(a.linkedAs(link.name))} · ${a.lastSync}: ${when}${lastSyncError ? ` · ⚠ ${escAttr(lastSyncError)}` : ''}</p>${held}`;
 }
 
 function pairPage(error?: string): string {

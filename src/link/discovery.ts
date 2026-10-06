@@ -1,5 +1,8 @@
 import dgram from 'dgram';
 import type { DiscoveredDevice } from '../contract.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('discovery');
 
 // Passive LAN discovery of Bambu printers: they announce themselves via SSDP NOTIFY on
 // UDP 2021 (broadcast) and 1990 (multicast 239.255.255.250) with serial, model code,
@@ -36,16 +39,16 @@ export function startDiscovery(): void {
     const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     sock.on('message', handle);
     sock.on('error', (e) => {
-      console.warn(`[discovery] UDP ${port}: ${e.message} — LAN-Erkennung auf diesem Port aus`);
+      log.warn(`UDP ${port}: ${e.message} — LAN-Erkennung auf diesem Port aus`);
       sock.close();
     });
     sock.bind(port, () => {
       if (port === 1990) {
-        try { sock.addMembership('239.255.255.250'); } catch (e) { console.warn('[discovery] multicast:', (e as Error).message); }
+        try { sock.addMembership('239.255.255.250'); } catch (e) { log.warn('multicast:', (e as Error).message); }
       }
     });
   }
-  console.log('[discovery] Lausche auf Bambu-Ankündigungen (UDP 2021/1990)');
+  log.info('Lausche auf Bambu-Ankündigungen (UDP 2021/1990)');
 }
 
 export function discoveredDevices(): DiscoveredDevice[] {

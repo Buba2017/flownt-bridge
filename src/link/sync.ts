@@ -5,6 +5,11 @@ import type {
 import { BRIDGE_VERSION } from '../version.js';
 import { publicKeyPem, decryptSecret } from './keys.js';
 import { discoveredDevices, discoveredIp } from './discovery.js';
+import { RemovalGuard, type PendingRemoval } from './removal-guard.js';
+import { addTombstone, pruneTombstones, takeTombstone } from './tombstones.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('link');
 
 // Link to Flownt (edge function bridge-sync): pairing once, then a periodic sync that
 // applies the printers assigned to this bridge in Flownt, decrypts delivered access
@@ -22,10 +27,17 @@ const SYNC_INTERVAL_MS = 30_000;
 let lastSyncAt: Date | null = null;
 let lastSyncError: string | null = null;
 let ackQueue: string[] = [];
+const removalGuard = new RemovalGuard();
 
-export function linkStatus() {
-  return { link: loadMultiConfig().link ?? null, lastSyncAt, lastSyncError };
+export function linkStatus(): {
+  link: NonNullable<ReturnType<typeof loadMultiConfig>['link']> | null;
+  lastSyncAt: Date | null; lastSyncError: string | null; pendingRemoval: PendingRemoval | null;
+} {
+  return { link: loadMultiConfig().link ?? null, lastSyncAt, lastSyncError, pendingRemoval: removalGuard.status() };
 }
+
+/** Test hook: forget the pending mass-removal state. */
+export function resetRemovalGuard(): void { removalGuard.reset(); }
 
 async function post<T>(body: unknown): Promise<T> {
   const res = await fetch(`${FLOWNT_EDGE_URL}/bridge-sync`, {
@@ -48,7 +60,7 @@ export async function pair(code: string, name?: string): Promise<BridgePairRespo
   const cfg = loadMultiConfig();
   cfg.link = { bridgeId: res.bridge_id, bridgeToken: res.bridge_token, name: res.name, pairedAt: new Date().toISOString() };
   saveMultiConfig(cfg);
-  console.log(`[link] Mit Flownt gekoppelt als „${res.name}" (${res.bridge_id})`);
+  log.info(`Mit Flownt gekoppelt als „${res.name}" (${res.bridge_id})`);
   return res;
 }
 
@@ -58,11 +70,13 @@ export function unpair(): void {
   saveMultiConfig(cfg);
 }
 
-function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks): void {
+/** Apply a sync response to the local config. Exported for tests. */
+export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: RemovalGuard = removalGuard): void {
   const cfg = loadMultiConfig();
   const added: PrinterConfig[] = [];
   const updated: PrinterConfig[] = [];
   const removed: string[] = [];
+  let dirty = pruneTombstones(cfg);
   const remote = res.printers.filter(r => r.enabled);
 
   for (const r of remote) {
@@ -91,13 +105,36 @@ function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks): void {
       added.push(p);
     }
   }
+
+  // Removals: managed printers the backend no longer lists. A mass removal (all or more
+  // than half) is held until confirmed by repeated syncs — see removal-guard.ts.
   const keep = new Set(remote.map(r => r.printer_id));
+  const managed = cfg.printers.filter(p => p.managed && p.flowntPrinterId && !added.includes(p));
+  const missing = managed.filter(p => !keep.has(p.flowntPrinterId!)).map(p => p.flowntPrinterId!);
+  const decision = guard.decide(missing, managed.length);
+  if (decision.held.length) {
+    const pending = guard.status();
+    // Log the first sighting and then every 10th sync, not every 30 s.
+    if (pending && (pending.confirmations === 1 || pending.confirmations % 10 === 0)) {
+      log.warn(`Sync would remove ${decision.held.length} of ${managed.length} printers — keeping them until `
+        + `the removal is confirmed (seen ${pending.confirmations}× since ${pending.since.toISOString()}).`);
+    }
+  } else if (decision.confirmed) {
+    log.warn(`Removal of ${decision.allowed.length} printers confirmed by repeated syncs — applying it.`);
+  }
+  const removeIds = new Set(decision.allowed);
   cfg.printers = cfg.printers.filter(p => {
-    if (p.managed && p.flowntPrinterId && !keep.has(p.flowntPrinterId)) { removed.push(p.id); return false; }
+    if (p.managed && p.flowntPrinterId && removeIds.has(p.flowntPrinterId)) {
+      // Keep the access code for 24 h in case the printer comes back.
+      addTombstone(cfg, { flowntPrinterId: p.flowntPrinterId, adapterSerial: p.adapterSerial, adapterApiKey: p.adapterApiKey });
+      removed.push(p.id);
+      return false;
+    }
     return true;
   });
 
-  // Delivered secrets → local config; acknowledged on the next sync.
+  // Delivered secrets → local config; acknowledged on the next sync. A code for a
+  // printer this bridge does not have (yet) is parked like a removed printer's code.
   for (const s of res.secrets) {
     const local = cfg.printers.find(p => p.flowntPrinterId === s.printer_id);
     try {
@@ -105,19 +142,37 @@ function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks): void {
       if (local && code && local.adapterApiKey !== code) {
         local.adapterApiKey = code;
         if (!added.includes(local) && !updated.includes(local)) updated.push(local);
+      } else if (!local && code) {
+        addTombstone(cfg, { flowntPrinterId: s.printer_id, adapterApiKey: code });
+        dirty = true;
       }
     } catch (e) {
-      console.error(`[link] Secret ${s.id} nicht entschlüsselbar: ${(e as Error).message}`);
+      log.error(`Secret ${s.id} nicht entschlüsselbar: ${(e as Error).message}`);
     }
     ackQueue.push(s.id);
   }
 
-  if (added.length || updated.length || removed.length) {
+  // Printers still without a code get a parked one back (re-added after a removal).
+  let restored = 0;
+  for (const p of cfg.printers) {
+    if (!p.managed || !needsAccessCode(p)) continue;
+    const code = takeTombstone(cfg, p);
+    if (!code) continue;
+    p.adapterApiKey = code;
+    restored++;
+    dirty = true;
+    if (!added.includes(p) && !updated.includes(p)) updated.push(p);
+  }
+
+  if (added.length || updated.length || removed.length || dirty) {
     saveMultiConfig(cfg);
     for (const id of removed) cb.onDelete(id);
     for (const p of added) cb.onAdd(p);
     for (const p of updated) cb.onUpdate(p);
-    console.log(`[link] Sync: +${added.length} ~${updated.length} -${removed.length} Drucker, ${res.secrets.length} Code(s) übernommen`);
+    if (added.length || updated.length || removed.length) {
+      log.info(`Sync: +${added.length} ~${updated.length} -${removed.length} Drucker, ${res.secrets.length} Code(s) übernommen`
+        + (restored ? `, ${restored} Code(s) wiederhergestellt` : ''));
+    }
   }
 }
 
@@ -136,6 +191,8 @@ async function syncOnce(cb: LinkCallbacks): Promise<void> {
     discovered: discoveredDevices(), printers, acked_secrets: acked,
   };
   const res = await post<BridgeSyncResponse>(req);
+  // A malformed body is a failed sync, never "no printers".
+  if (!res || !Array.isArray(res.printers) || !Array.isArray(res.secrets)) throw new Error('bridge-sync: malformed response');
   ackQueue = ackQueue.filter(id => !acked.includes(id));
   reconcile(res, cb);
   lastSyncAt = new Date();
@@ -151,7 +208,7 @@ export function startSyncLoop(cb: LinkCallbacks): void {
       await syncOnce(cb);
     } catch (e) {
       lastSyncError = (e as Error).message;
-      console.warn(`[link] Sync fehlgeschlagen: ${lastSyncError}`);
+      log.warn(`Sync fehlgeschlagen: ${lastSyncError}`);
     }
     setTimeout(tick, SYNC_INTERVAL_MS);
   };
