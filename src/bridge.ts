@@ -86,18 +86,24 @@ export async function runBridge(
   // Initial heartbeat to verify token
   try {
     const heartbeat: IngestBody = { auth_token: cfg.flowntAuthToken, event_type: 'heartbeat', bridge_version: BRIDGE_VERSION };
-    await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
+    const res = await fetch(`${FLOWNT_EDGE_URL}/bridge-ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(heartbeat),
+      signal: AbortSignal.timeout(10_000),
     });
+    // A rejected token (401) or wrong backend URL (404) must not be reported as OK.
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`bridge-ingest ${res.status}: ${text.slice(0, 200)}`);
+    }
     console.log(`[${cfg.name}] Auth OK ✓`);
     state.error = null;
     addEvent(cfg.id, 'success', 'Verbindung zu Flownt hergestellt ✓');
   } catch (e) {
     console.error(`[${cfg.name}] Heartbeat fehlgeschlagen:`, e);
     state.error = 'Keine Verbindung zu Flownt. Bitte Token und Server-URL prüfen.';
-    addEvent(cfg.id, 'warn', 'Heartbeat fehlgeschlagen — Token oder Verbindung prüfen');
+    addEvent(cfg.id, 'warn', `Heartbeat fehlgeschlagen — Token oder Verbindung prüfen (${(e as Error)?.message ?? e})`);
   }
 
   let consecutiveErrors = 0;
