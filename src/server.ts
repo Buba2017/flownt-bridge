@@ -18,10 +18,29 @@ import { BRIDGE_VERSION } from './version.js';
 import { linkStatus } from './link/sync.js';
 import { CameraRelay } from './camera/relay.js';
 import { registerCameraRoutes } from './camera/routes.js';
+import {
+  AdminAuth, CSRF_FIELD, bearerToken, hostPolicy, isLoopbackAddress, isLoopbackBind,
+  isSameOriginRequest, newSecret, normalizeOrigin, originPolicy, safeEqual,
+} from './http-auth.js';
+import { createLogger } from './logger.js';
 
+const log = createLogger('server');
 const PORT = Number(process.env.FLOWNT_BRIDGE_PORT) || 7432;
-// Optional bind address, e.g. 127.0.0.1 on a shared server. Unset = all interfaces (as before).
-const HOST = process.env.FLOWNT_BRIDGE_HOST?.trim() || undefined;
+
+/**
+ * Bind address from FLOWNT_BRIDGE_HOST. Unset = loopback only (127.0.0.1 and ::1), so
+ * only this computer can reach the UI and API. LAN exposure (e.g. a Raspberry Pi
+ * reached from other devices) must be enabled explicitly, e.g. FLOWNT_BRIDGE_HOST=0.0.0.0.
+ */
+export function resolveBindHosts(env: NodeJS.ProcessEnv = process.env): string[] {
+  const host = env.FLOWNT_BRIDGE_HOST?.trim();
+  return host ? [host] : ['127.0.0.1', '::1'];
+}
+
+// Per-process state the HTML shell needs: the CSRF token injected into every form and
+// whether the admin password (and thus a logout button) is active.
+let csrfToken = newSecret();
+let adminEnabled = false;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -337,8 +356,18 @@ function tr(): Tr { return T[getLang()]; }
 
 // ── HTML shell ─────────────────────────────────────────────────────────────────
 
-function html(title: string, body: string, autoRefresh = false): string {
+// Every POST form of the setup UI carries the CSRF token (checked in createApp).
+function withCsrf(body: string): string {
+  return body.replace(/(<form\b[^>]*\bmethod="POST"[^>]*>)/gi,
+    `$1<input type="hidden" name="${CSRF_FIELD}" value="${csrfToken}"/>`);
+}
+
+function html(title: string, rawBody: string, autoRefresh = false): string {
   const lang = getLang();
+  const logout = adminEnabled
+    ? ` · <form method="POST" action="/logout" style="display:inline;"><button type="submit" style="background:none;border:none;color:#666;cursor:pointer;font-size:0.72rem;padding:0;">${lang === 'de' ? 'Abmelden' : 'Sign out'}</button></form>`
+    : '';
+  const body = withCsrf(rawBody + '\n<div class="ver-footer">Flownt Bridge v' + BRIDGE_VERSION + logout + '</div>');
   return `<!DOCTYPE html>
 <html lang="${lang}">
 <head>
@@ -399,7 +428,6 @@ function html(title: string, body: string, autoRefresh = false): string {
 </head>
 <body>
 ${body}
-<div class="ver-footer">Flownt Bridge v${BRIDGE_VERSION}</div>
 ${autoRefresh ? '<script>setTimeout(() => location.reload(), 8000);</script>' : ''}
 </body>
 </html>`;
@@ -680,7 +708,56 @@ ${accessCodeBanner(cfg.printers)}
   <div style="margin-top:1rem;">
     <a href="/setup/new" class="btn btn-full">${t.addPrinter}</a>
   </div>
+</div>
+${originsCard(cfg.allowedOrigins ?? [])}`);
+}
+
+// Extra Flownt web addresses (e.g. a self-hosted instance) that may use label printing,
+// printer commands and the camera through this bridge.
+function originsCard(origins: string[], error?: string): string {
+  const de = getLang() === 'de';
+  return `<div class="card card-sm">
+  <h1>${de ? 'Weitere Flownt-Adressen' : 'Additional Flownt addresses'}</h1>
+  <p class="hint">${de
+    ? 'flownt.app ist immer erlaubt. Nutzt du eine eigene Flownt-Instanz im Browser (z. B. https://flownt.example.com), trage ihre Adresse hier ein — eine pro Zeile. Andere Webseiten können die Bridge nicht ansprechen.'
+    : 'flownt.app is always allowed. If you use your own Flownt instance in the browser (e.g. https://flownt.example.com), enter its address here — one per line. Other websites cannot talk to the bridge.'}</p>
+  ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
+  <form method="POST" action="/settings/origins">
+    <textarea name="origins" rows="3" style="width:100%;background:#111;border:1px solid #333;border-radius:8px;padding:0.625rem 0.875rem;color:#e5e5e5;font-size:0.85rem;margin-bottom:0.75rem;" placeholder="https://flownt.example.com">${escAttr(origins.join('\n'))}</textarea>
+    <button class="btn btn-full" type="submit">${de ? 'Speichern' : 'Save'}</button>
+  </form>
+</div>`;
+}
+
+function loginPage(next: string, error?: string): string {
+  const de = getLang() === 'de';
+  return html(de ? 'Anmelden' : 'Sign in', `
+<div class="topbar"><span class="logo">⬡ Flownt Bridge</span></div>
+<div class="card card-sm">
+  <h1>${de ? 'Anmelden' : 'Sign in'}</h1>
+  ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
+  <form method="POST" action="/login">
+    <input type="hidden" name="next" value="${escAttr(next)}"/>
+    <label>${de ? 'Admin-Passwort der Bridge' : 'Bridge admin password'}</label>
+    <input name="password" type="password" autocomplete="current-password" required autofocus/>
+    <button class="btn btn-full" type="submit">${de ? 'Anmelden' : 'Sign in'}</button>
+  </form>
 </div>`);
+}
+
+function securityErrorPage(): string {
+  const de = getLang() === 'de';
+  return simplePage(de ? 'Sicherheitsprüfung' : 'Security check', `
+  <h1>${de ? 'Sicherheitsprüfung fehlgeschlagen' : 'Security check failed'}</h1>
+  <p class="hint" style="margin-top:0;">${de
+    ? 'Die Anfrage kam nicht von dieser Bridge-Oberfläche oder die Seite ist veraltet (z. B. nach einem Neustart der Bridge). Bitte die Seite neu laden und erneut versuchen.'
+    : 'The request did not come from this bridge UI or the page is outdated (e.g. after the bridge restarted). Reload the page and try again.'}</p>
+  <a href="/" class="btn btn-full">OK</a>`);
+}
+
+/** Only same-origin paths ("/x", never "//host" or "/\\host") for redirects. */
+function safePath(p: string | undefined): string {
+  return p && /^\/(?![/\\])/.test(p) ? p : '/';
 }
 
 // ── Add / Edit form ────────────────────────────────────────────────────────────
@@ -702,7 +779,12 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
   const isBambu = adapter === 'bambu';
   // Feldwerte: bestehender Drucker gewinnt; sonst Vorbefüllung (nur passend zum Adapter).
   const vName   = escAttr(printer?.name ?? prefill?.name ?? '');
-  const vToken  = escAttr(printer?.flowntAuthToken ?? prefill?.token ?? '');
+  // Stored secrets are never rendered back: the fields stay empty with a "set" marker
+  // and an empty submission keeps the stored value (see parseForm). Only a token that
+  // arrives with Flownt's deep link (the user's own URL) is prefilled.
+  const vToken  = printer ? '' : escAttr(prefill?.token ?? '');
+  const keepHint = getLang() === 'de' ? '•••• gespeichert – leer lassen = unverändert' : '•••• set – leave empty to keep';
+  const ph = (stored: string | undefined, fallback: string) => escAttr(stored?.trim() ? keepHint : fallback);
   const vBambuUrl    = escAttr(printer?.adapterType === 'bambu' ? printer.adapterUrl : (!printer && isBambu ? prefill?.url ?? '' : ''));
   const vBambuSerial = escAttr(printer?.adapterType === 'bambu' ? printer.adapterSerial : (!printer && isBambu ? prefill?.serial ?? '' : ''));
   const vMoonUrl = escAttr(printer?.adapterType === 'moonraker' ? printer.adapterUrl : (!printer && adapter === 'moonraker' ? prefill?.url ?? '' : ''));
@@ -727,7 +809,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
     <input name="name" placeholder="${t.printerNamePlaceholder}" value="${vName}" required/>
 
     <label>${t.authToken}</label>
-    <input name="token" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${vToken}" required/>
+    <input name="token" type="password" autocomplete="off" placeholder="${ph(printer?.flowntAuthToken, 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx')}" value="${vToken}"${printer?.flowntAuthToken ? '' : ' required'}/>
     <p class="hint">${t.authTokenHint}</p>
 
     <label>${t.printerType}</label>
@@ -743,7 +825,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <label>${t.serial}</label>
       <input name="bambuSerial" placeholder="${t.serialPlaceholder}" value="${vBambuSerial}"/>
       <label>${t.accessCode}</label>
-      <input name="bambuCode" type="password" placeholder="8-stelliger Code" value="${escAttr(printer?.adapterType === 'bambu' ? printer.adapterApiKey : '')}"${prefilled ? ' autofocus' : ''}/>
+      <input name="bambuCode" type="password" autocomplete="off" placeholder="${ph(printer?.adapterType === 'bambu' ? printer.adapterApiKey : '', '8-stelliger Code')}" value=""${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.accessCodeHint}</p>
       <label>${t === T.de ? 'Kamera-Verbindung' : 'Camera connection'}</label>
       <select name="cameraTransport">
@@ -757,7 +839,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <label>${t.cloudEmail}</label>
       <input name="bambuCloudEmail" type="email" placeholder="email@example.com" value="${escAttr(printer?.bambuCloudEmail ?? '')}"/>
       <label>${t.cloudPassword}</label>
-      <input name="bambuCloudPassword" type="password" value="${escAttr(printer?.bambuCloudPassword ?? '')}"/>
+      <input name="bambuCloudPassword" type="password" autocomplete="off" placeholder="${ph(printer?.bambuCloudPassword, '')}" value=""/>
       <p class="hint">${t.cloudEmailHint}</p>
     </div>
 
@@ -765,14 +847,14 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <label>${t.printerUrl}</label>
       <input name="moonrakerUrl" placeholder="http://192.168.1.100" value="${vMoonUrl}"/>
       <label>${t.apiKey}</label>
-      <input name="moonrakerKey" type="password" value="${escAttr(printer?.adapterType === 'moonraker' ? printer.adapterApiKey : '')}"/>
+      <input name="moonrakerKey" type="password" autocomplete="off" placeholder="${ph(printer?.adapterType === 'moonraker' ? printer.adapterApiKey : '', '')}" value=""/>
     </div>
 
     <div id="adapter-prusa">
       <label>${t.printerUrl}</label>
       <input name="prusaUrl" placeholder="http://192.168.1.100" value="${vPrusaUrl}"/>
       <label>${t.apiKey}</label>
-      <input name="prusaKey" type="password" value="${escAttr(printer?.adapterType === 'prusa' ? printer.adapterApiKey : '')}"${prefilled ? ' autofocus' : ''}/>
+      <input name="prusaKey" type="password" autocomplete="off" placeholder="${ph(printer?.adapterType === 'prusa' ? printer.adapterApiKey : '', '')}" value=""${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.prusaApiKeyHint}</p>
     </div>
 
@@ -797,12 +879,23 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
 
 // ── Form parser ────────────────────────────────────────────────────────────────
 
-function parseForm(
+export function parseForm(
   body: Record<string, string>,
   id: string,
+  existing?: PrinterConfig,
 ): { cfg: PrinterConfig | null; error?: string } {
   const t = tr();
-  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, bambuCloudEmail, bambuCloudPassword, shellyUrl, cameraTransport } = body;
+  const { name, adapterType, bambuUrl, bambuSerial, moonrakerUrl, prusaUrl, bambuCloudEmail, shellyUrl, cameraTransport } = body;
+  // Secret fields are rendered empty; an empty submission keeps the stored value
+  // (only for the same adapter type, so a key never moves to another printer type).
+  const keep = (submitted: string | undefined, type: PrinterConfig['adapterType']) =>
+    submitted?.trim() || (existing?.adapterType === type ? existing.adapterApiKey : '');
+  const token = body.token?.trim() || existing?.flowntAuthToken || '';
+  const bambuCode = keep(body.bambuCode, 'bambu');
+  const moonrakerKey = keep(body.moonrakerKey, 'moonraker');
+  const prusaKey = keep(body.prusaKey, 'prusa');
+  const sameCloudAccount = !!existing?.bambuCloudEmail && existing.bambuCloudEmail === bambuCloudEmail?.trim();
+  const bambuCloudPassword = body.bambuCloudPassword?.trim() || (sameCloudAccount ? existing?.bambuCloudPassword ?? '' : '');
   if (!name?.trim())   return { cfg: null, error: t.nameRequired };
   if (!token?.trim())  return { cfg: null, error: t.tokenRequired };
   // Der Flownt-Auth-Token ist eine UUID (DB-Spalte uuid). Das Passwortfeld ist blind —
@@ -833,6 +926,9 @@ function parseForm(
       ...(isBambu && bambuCloudEmail?.trim()    ? { bambuCloudEmail:    bambuCloudEmail.trim()    } : {}),
       ...(isBambu && bambuCloudPassword?.trim() ? { bambuCloudPassword: bambuCloudPassword.trim() } : {}),
       ...(shellyUrl?.trim() ? { smartPlugType: 'shelly' as const, smartPlugUrl: shellyUrl.trim() } : {}),
+      // Editing a printer assigned in Flownt keeps that link.
+      ...(existing?.flowntPrinterId ? { flowntPrinterId: existing.flowntPrinterId } : {}),
+      ...(existing?.managed ? { managed: true } : {}),
     },
   };
 }
@@ -971,32 +1067,102 @@ function callDymoConnect(body: string): Promise<string> {
 
 // ── Express server ─────────────────────────────────────────────────────────────
 
-export function startServer(callbacks: ServerCallbacks): void {
+export interface AppOptions {
+  /** Setup-UI password (FLOWNT_BRIDGE_ADMIN_PASSWORD); unset = no login. */
+  adminPassword?: string;
+  port?: number;
+  /** Override for tests; defaults to the camera relay used in production. */
+  cameraRelay?: CameraRelay;
+}
+
+/** The local printer whose Flownt token matches (constant-time), if any. */
+function printerByToken(token: string | null): PrinterConfig | undefined {
+  if (!token) return undefined;
+  const supplied = token.toLowerCase();
+  let match: PrinterConfig | undefined;
+  // Compare against every printer (no early exit) to keep timing independent of position.
+  for (const p of loadMultiConfig().printers) {
+    if (p.flowntAuthToken && safeEqual(p.flowntAuthToken.toLowerCase(), supplied) && !match) match = p;
+  }
+  return match;
+}
+
+// Paths the Flownt web app calls from the browser. They have their own CORS + token
+// checks and never see the setup-UI login or CSRF guard.
+const API_PATHS = new Set(['/api/version', '/printer/command', '/dymo/print']);
+
+export function createApp(callbacks: ServerCallbacks, options: AppOptions = {}) {
   const app = express();
-  app.use(express.urlencoded({ extended: true }));
+  app.disable('x-powered-by');
+  const admin = new AdminAuth(options.adminPassword || undefined, options.port ?? PORT);
+  adminEnabled = admin.enabled;
+  csrfToken = newSecret();
+  const isAllowedOrigin = originPolicy(() => loadMultiConfig().allowedOrigins ?? []);
+  const isAllowedHost = hostPolicy();
+  const cameraRelay = options.cameraRelay ?? new CameraRelay();
+
+  // DNS-rebinding defence: a page on an attacker's domain that resolves to this machine
+  // must not be able to read the UI. The camera is exempt: it is token-protected and may
+  // be served through a tunnel under a public name.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/camera/') || isAllowedHost(req.headers.host)) return next();
+    log.warn(`Rejected request for unknown host "${req.headers.host ?? ''}" (${req.method} ${req.path})`);
+    res.status(403).type('text/plain').send(
+      'Host not allowed. If you reach the bridge under this name on purpose, add it to FLOWNT_BRIDGE_ALLOWED_HOSTS.');
+  });
+
+  app.use(express.urlencoded({ extended: true, limit: '200kb' }));
   app.use(express.json({ limit: '10mb' }));
-  const cameraRelay = new CameraRelay();
+
   registerCameraRoutes(app, {
     printers: () => loadMultiConfig().printers,
     reportedUrl: id => printerStates.get(id)?.adapter?.getCameraRtspUrl?.(),
     relay: cameraRelay,
+    isAllowedOrigin,
   });
 
-  function setCorsHeaders(req: express.Request, res: express.Response) {
-    res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Private-Network', 'true');
-  }
+  // CORS for the browser API: only allowed origins get CORS (and Private Network
+  // Access) headers; any other Origin is refused before the handler runs.
+  const apiCors = (methods: string): express.RequestHandler => (req, res, next) => {
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Cache-Control', 'no-store');
+    const origin = req.headers.origin;
+    if (origin !== undefined) {
+      if (!isAllowedOrigin(origin)) {
+        log.warn(`Refused ${req.method} ${req.originalUrl} from origin ${origin} (not allowed; see FLOWNT_ALLOWED_ORIGINS)`);
+        return res.status(403).json({ ok: false, code: 'origin_not_allowed', error: 'Origin not allowed' });
+      }
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', methods);
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Max-Age', '600');
+      if (req.headers['access-control-request-private-network'] === 'true') {
+        res.setHeader('Access-Control-Allow-Private-Network', 'true');
+      }
+    }
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  };
+
+  // ── Version probe (Flownt checks whether a bridge runs on this computer) ────
+
+  app.use('/api/version', apiCors('GET, OPTIONS'));
+  // command_auth tells the app that /printer/command expects the printer token.
+  app.get('/api/version', (_req, res) => res.json({ version: BRIDGE_VERSION, command_auth: 'bearer' }));
 
   // ── Dymo proxy ─────────────────────────────────────────────────────────────
+  // Label printing is not tied to a printer, and a label-only bridge has no Flownt
+  // token the app could send. A browser call from this computer with an allowed Origin
+  // is therefore enough; everything else (other machines, scripts without Origin)
+  // needs `Authorization: Bearer <token of any printer on this bridge>`.
 
-  app.use('/dymo', (req, res, next) => {
-    setCorsHeaders(req, res);
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    next();
-  });
-  app.options('/dymo/print', (_req, res) => res.sendStatus(204));
+  app.use('/dymo/print', apiCors('POST, OPTIONS'));
   app.post('/dymo/print', async (req, res) => {
+    const token = bearerToken(req);
+    const fromLocalBrowser = req.headers.origin !== undefined && isLoopbackAddress(req.socket.remoteAddress);
+    if (token ? !printerByToken(token) : !fromLocalBrowser) {
+      return res.status(401).json({ ok: false, code: 'unauthorized', error: 'Bridge token required' });
+    }
     const { printerName, labelXml, pngBase64, widthMm, heightMm } = req.body as {
       printerName?: string; labelXml?: string;
       pngBase64?: string; widthMm?: number; heightMm?: number;
@@ -1036,55 +1202,51 @@ export function startServer(callbacks: ServerCallbacks): void {
           (err) => { if (err) reject(err); else resolve(); });
       });
       const cupsName = printerName.replace(/ /g, '_');
-      console.log(`[dymo-bridge] lp: ${cupsName} media=${mediaName} ppi=300 (${wPx}x${hPx}px)`);
+      log.info(`dymo lp: ${cupsName} media=${mediaName} ppi=300 (${wPx}x${hPx}px)`);
       await new Promise<void>((resolve, reject) => {
         execFile('lp', ['-d', cupsName, '-o', `media=${mediaName}`, '-o', 'ppi=300', tmpFile],
           (err) => { if (err) reject(err); else resolve(); });
       });
       return res.json({ ok: true });
     } catch (e) {
-      console.error(`[dymo-bridge] lp failed:`, e);
+      log.error('dymo lp failed:', e);
       return res.status(500).json({ ok: false, error: `lp: ${String(e)}` });
     } finally {
       fs.unlink(tmpFile).catch(() => {});
     }
   });
 
-  // ── Printer command (multi-printer aware) ───────────────────────────────────
+  // ── Printer command (pause / resume / stop) ─────────────────────────────────
+  // Requires `Authorization: Bearer <Flownt bridge token of that printer>` — the same
+  // per-printer token the camera uses (printer_bridge_configs.auth_token in Flownt). The
+  // token identifies the printer; printerId / flowntPrinterId, if sent, must match it.
+  // Calls without Origin (scripts) are only accepted from this computer.
 
-  app.use('/printer', (req, res, next) => {
-    setCorsHeaders(req, res);
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    next();
-  });
-  app.options('/printer/command', (_req, res) => res.sendStatus(204));
+  app.use('/printer/command', apiCors('POST, OPTIONS'));
   app.post('/printer/command', async (req, res) => {
     const body = req.body as PrinterCommand & { printerId?: string; flowntPrinterId?: string };
     const { printerId, flowntPrinterId, ...cmd } = body;
-    if (!(cmd as { type?: string }).type) return res.status(400).json({ ok: false, error: 'Missing command type' });
-
-    // The printer must be identified: by local id or by its Flownt printer id. Without
-    // one, only a bridge with exactly one running printer accepts the command — picking
-    // "the first running printer" could pause or stop the wrong machine.
-    let adapter: Adapter | null | undefined;
-    if (printerId) {
-      adapter = printerStates.get(printerId)?.adapter;
-    } else if (flowntPrinterId) {
-      const local = loadMultiConfig().printers.find(p => p.flowntPrinterId === flowntPrinterId);
-      adapter = local ? printerStates.get(local.id)?.adapter : undefined;
-    } else {
-      const running = [...printerStates.values()].filter(s => s.running);
-      if (running.length > 1) {
-        return res.status(400).json({ ok: false, code: 'printer_required', error: 'Several printers are connected — printerId or flowntPrinterId is required' });
-      }
-      adapter = running[0]?.adapter;
+    const printer = printerByToken(bearerToken(req));
+    if (!printer) return res.status(401).json({ ok: false, code: 'unauthorized', error: 'Printer token required' });
+    if (req.headers.origin === undefined && !isLoopbackAddress(req.socket.remoteAddress)) {
+      return res.status(403).json({ ok: false, code: 'forbidden', error: 'Commands without Origin are only accepted from this computer' });
     }
+    if ((printerId && printerId !== printer.id)
+      || (flowntPrinterId && printer.flowntPrinterId && flowntPrinterId !== printer.flowntPrinterId)) {
+      return res.status(403).json({ ok: false, code: 'token_mismatch', error: 'Token does not belong to this printer' });
+    }
+    const type = (cmd as { type?: string }).type;
+    if (type !== 'pause' && type !== 'resume' && type !== 'stop') {
+      return res.status(400).json({ ok: false, error: 'Missing or unknown command type' });
+    }
+    const adapter = printerStates.get(printer.id)?.adapter;
     if (!adapter) return res.status(404).json({ ok: false, code: 'printer_not_found', error: 'Printer is not connected to this bridge' });
     if (!adapter.sendCommand) {
       return res.status(503).json({ ok: false, error: 'Connected adapter does not support commands' });
     }
     try {
-      await adapter.sendCommand(cmd as PrinterCommand);
+      log.info(`Command "${type}" for ${printer.name} (origin ${req.headers.origin ?? 'none'})`);
+      await adapter.sendCommand({ type });
       res.json({ ok: true });
     } catch (e) {
       const rejected = (e as { code?: string }).code === 'command_rejected';
@@ -1092,9 +1254,60 @@ export function startServer(callbacks: ServerCallbacks): void {
     }
   });
 
-  // ── API state ───────────────────────────────────────────────────────────────
+  // ── Setup UI: headers, optional login, CSRF ─────────────────────────────────
 
-  app.get('/api/version', (_req, res) => res.json({ version: BRIDGE_VERSION }));
+  app.use((req, res, next) => {
+    if (API_PATHS.has(req.path)) return next();
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+
+  app.use((req, res, next) => {
+    if (!admin.enabled || req.path === '/login' || admin.check(req)) return next();
+    if (req.method === 'GET' && !req.path.startsWith('/api/') && req.accepts(['html', 'json']) === 'html') {
+      return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    }
+    res.status(401).json({ error: 'login_required' });
+  });
+
+  app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    const supplied = (req.body as Record<string, unknown> | undefined)?.[CSRF_FIELD];
+    if (isSameOriginRequest(req) && typeof supplied === 'string' && safeEqual(supplied, csrfToken)) return next();
+    log.warn(`Rejected ${req.method} ${req.path}: CSRF check failed (origin ${req.headers.origin ?? 'none'})`);
+    res.status(403).send(securityErrorPage());
+  });
+
+  app.get('/login', (req, res) => {
+    if (!admin.enabled) return res.redirect('/');
+    res.send(loginPage(safePath(req.query.next as string | undefined)));
+  });
+  app.post('/login', (req, res) => {
+    const { password, next } = req.body as { password?: string; next?: string };
+    const remote = req.socket.remoteAddress ?? '';
+    if (!admin.enabled) return res.redirect('/');
+    if (admin.locked(remote)) {
+      return res.status(429).send(loginPage(safePath(next), getLang() === 'de' ? 'Zu viele Fehlversuche — bitte später erneut versuchen.' : 'Too many failed attempts — try again later.'));
+    }
+    const session = admin.login(password ?? '', remote);
+    if (!session) {
+      log.warn(`Failed setup-UI login from ${remote}`);
+      return res.status(401).send(loginPage(safePath(next), getLang() === 'de' ? 'Falsches Passwort.' : 'Wrong password.'));
+    }
+    res.setHeader('Set-Cookie', admin.cookie(session));
+    res.redirect(safePath(next));
+  });
+  app.post('/logout', (req, res) => {
+    admin.logout(req);
+    res.setHeader('Set-Cookie', admin.clearCookie());
+    res.redirect(admin.enabled ? '/login' : '/');
+  });
+
+  // ── API state ───────────────────────────────────────────────────────────────
 
   app.get('/api/state', (_req, res) => {
     const cfg = loadMultiConfig();
@@ -1121,16 +1334,36 @@ export function startServer(callbacks: ServerCallbacks): void {
       cfg.language = lang;
       saveMultiConfig(cfg);
     }
-    // Only same-origin paths — never redirect to another site ("//host" included).
-    res.redirect(returnUrl && /^\/(?![/\\])/.test(returnUrl) ? returnUrl : '/');
+    res.redirect(safePath(returnUrl));
+  });
+
+  // ── Allowed origins ─────────────────────────────────────────────────────────
+
+  app.post('/settings/origins', (req, res) => {
+    const lines = String((req.body as { origins?: string }).origins ?? '').split(/[\s,]+/).filter(Boolean);
+    const origins: string[] = [];
+    for (const line of lines) {
+      const o = normalizeOrigin(line);
+      if (!o) {
+        return res.status(400).send(html(tr().settings, `<div class="topbar"><span class="logo">⬡ ${tr().bridge}</span>
+          <div class="topbar-right"><a href="/setup" class="btn btn-ghost">${tr().cancel}</a></div></div>
+          ${originsCard(lines, `${getLang() === 'de' ? 'Ungültige Adresse' : 'Invalid address'}: ${line}`)}`));
+      }
+      if (!origins.includes(o)) origins.push(o);
+    }
+    const cfg = loadMultiConfig();
+    if (origins.length) cfg.allowedOrigins = origins; else delete cfg.allowedOrigins;
+    saveMultiConfig(cfg);
+    log.info(`Allowed origins updated: ${origins.join(', ') || '(defaults only)'}`);
+    res.redirect('/setup');
   });
 
   // ── Pages ───────────────────────────────────────────────────────────────────
 
   app.get('/', (_req, res) => {
     const cfg = loadMultiConfig();
-    // Rolle noch nicht gewählt: Bestandsinstanzen mit Druckern (z. B. Pi) nicht zur Wahl zwingen,
-    // frische Instanzen ohne Drucker auf die Rollen-Auswahl leiten.
+    // Role not chosen yet: existing installs with printers (e.g. a Pi) keep the status
+    // page; fresh installs without printers go to the role choice.
     if (!cfg.role) {
       if (cfg.printers.length > 0) return res.send(statusPage());
       return res.redirect('/role');
@@ -1140,7 +1373,7 @@ export function startServer(callbacks: ServerCallbacks): void {
     res.send(statusPage());
   });
 
-  // ── Rollenwahl (Phase 2) ─────────────────────────────────────────────────────
+  // ── Role choice ─────────────────────────────────────────────────────────────
   app.get('/role', (_req, res) => res.send(rolePage()));
   app.post('/role', (req, res) => {
     const role = (req.body as { role?: string }).role;
@@ -1154,7 +1387,7 @@ export function startServer(callbacks: ServerCallbacks): void {
     res.redirect('/role');
   });
 
-  // ── Etikettendruck-Dashboard (Phase 2) ───────────────────────────────────────
+  // ── Label printing dashboard ────────────────────────────────────────────────
   app.get('/label', async (req, res) => {
     const printers = await listSystemPrinters();
     res.send(labelPage(printers, req.query.saved === '1'));
@@ -1262,7 +1495,7 @@ export function startServer(callbacks: ServerCallbacks): void {
 
   app.get('/setup/new', (req, res) => {
     const q = req.query as Record<string, string | undefined>;
-    // Vorbefüllung nur übernehmen, wenn ein Token mitkommt (Deep-Link aus Flownt).
+    // Prefill only with a token (deep link from Flownt).
     const prefill = q.token
       ? { token: q.token, name: q.name, adapter: q.adapter, url: q.url, serial: q.serial }
       : undefined;
@@ -1290,7 +1523,8 @@ export function startServer(callbacks: ServerCallbacks): void {
     const id = req.params.id;
     const multi = loadMultiConfig();
     const existing = multi.printers.find(p => p.id === id);
-    const { cfg: updated, error } = parseForm(req.body as Record<string, string>, id);
+    if (!existing) return res.redirect('/setup');
+    const { cfg: updated, error } = parseForm(req.body as Record<string, string>, id, existing);
     if (!updated) return res.send(printerFormPage(existing, error));
     multi.printers = multi.printers.map(p => p.id === id ? updated : p);
     saveMultiConfig(multi);
@@ -1309,24 +1543,49 @@ export function startServer(callbacks: ServerCallbacks): void {
     res.redirect('/setup');
   });
 
-  const server = HOST ? app.listen(PORT, HOST) : app.listen(PORT);
+  return { app, cameraRelay, admin };
+}
+
+export function startServer(callbacks: ServerCallbacks): void {
+  const hosts = resolveBindHosts();
+  const adminPassword = process.env.FLOWNT_BRIDGE_ADMIN_PASSWORD || undefined;
+  const { app, cameraRelay } = createApp(callbacks, { adminPassword, port: PORT });
+
+  const exposed = hosts.filter(h => !isLoopbackBind(h));
+  if (exposed.length) {
+    log.warn(`Web UI and API are reachable from the network (FLOWNT_BRIDGE_HOST=${exposed.join(',')}). `
+      + (adminPassword
+        ? 'The setup UI requires the admin password.'
+        : 'The setup UI has NO password — set FLOWNT_BRIDGE_ADMIN_PASSWORD, or bind to 127.0.0.1 and use an SSH tunnel.'));
+  }
+
+  const servers = hosts.map((host, i) => {
+    const server = app.listen(PORT, host);
+    server.on('listening', () => {
+      log.info(`Web UI running at http://${host.includes(':') ? `[${host}]` : host}:${PORT}`);
+    });
+    server.on('error', (e: NodeJS.ErrnoException) => {
+      // The extra IPv6 loopback listener is optional (IPv6 may be disabled).
+      if (i > 0 && !process.env.FLOWNT_BRIDGE_HOST) {
+        log.debug(`Optional listener on ${host} not available: ${e.code ?? e.message}`);
+        return;
+      }
+      // Without a handler a busy port crashes the process, and a service manager
+      // restarts it in a loop without saying why.
+      log.error(e.code === 'EADDRINUSE'
+        ? `Port ${PORT} is already in use — set FLOWNT_BRIDGE_PORT to a free port.`
+        : `Web UI failed to start on ${host}: ${e.message}`);
+      process.exit(1);
+    });
+    return server;
+  });
+
   const shutdown = () => { cameraRelay.dispose(); process.exit(0); };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
-  server.on('close', () => {
+  servers[0].on('close', () => {
     cameraRelay.dispose();
     process.removeListener('SIGINT', shutdown);
     process.removeListener('SIGTERM', shutdown);
-  });
-  server.on('listening', () => {
-    console.log(`[flownt-bridge] Web UI running at http://${HOST ?? 'localhost'}:${PORT}`);
-  });
-  server.on('error', (e: NodeJS.ErrnoException) => {
-    // Without a handler a busy port crashes the process, and a service manager
-    // restarts it in a loop without saying why.
-    console.error(e.code === 'EADDRINUSE'
-      ? `[flownt-bridge] Port ${PORT} is already in use — set FLOWNT_BRIDGE_PORT to a free port.`
-      : `[flownt-bridge] Web UI failed to start: ${e.message}`);
-    process.exit(1);
   });
 }

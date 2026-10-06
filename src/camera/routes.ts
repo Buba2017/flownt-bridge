@@ -3,12 +3,15 @@ import { timingSafeEqual } from 'crypto';
 import type { PrinterConfig } from '../config.js';
 import { CameraError, CameraRelay, resolveCameraSource } from './relay.js';
 import { MJPEG_BOUNDARY, multipartFrame } from './protocol.js';
+import { originPolicy } from '../http-auth.js';
 
 export interface CameraRouteOptions {
   printers(): PrinterConfig[];
   reportedUrl(id: string): string | null | undefined;
   relay: CameraRelay;
+  /** Exact origins (tests); otherwise `isAllowedOrigin` or the shared default policy. */
   allowedOrigins?: string[];
+  isAllowedOrigin?: (origin: string) => boolean;
 }
 
 function authenticate(req: Request, printers: PrinterConfig[]): PrinterConfig | undefined {
@@ -22,11 +25,11 @@ function authenticate(req: Request, printers: PrinterConfig[]): PrinterConfig | 
 }
 
 export function registerCameraRoutes(app: Express, options: CameraRouteOptions): void {
-  const allowed = new Set(options.allowedOrigins ?? [
-    'https://flownt.app', 'https://www.flownt.app',
-    'http://localhost:5173', 'http://127.0.0.1:5173',
-    ...(process.env.FLOWNT_CAMERA_ORIGINS ?? '').split(',').map(origin => origin.trim()).filter(Boolean),
-  ]);
+  // Same allowlist as the rest of the browser API (flownt.app, local dev origins,
+  // FLOWNT_ALLOWED_ORIGINS / FLOWNT_CAMERA_ORIGINS, origins saved in the setup UI).
+  const fixed = options.allowedOrigins ? new Set(options.allowedOrigins) : null;
+  const policy = options.isAllowedOrigin ?? originPolicy();
+  const allowed = { has: (origin: string) => (fixed ? fixed.has(origin) : policy(origin)) };
   app.use('/camera', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');

@@ -43,6 +43,9 @@ export interface MultiConfig {
   labelPrinter?: string;   // ausgewählter Etikettendrucker (System-/CUPS-Name)
   // Pairing with Flownt (bridge-sync). The token authenticates this bridge.
   link?: { bridgeId: string; bridgeToken: string; name: string; pairedAt: string };
+  // Extra browser origins allowed to call the bridge (e.g. a self-hosted Flownt app),
+  // added in the setup UI. Defaults and FLOWNT_ALLOWED_ORIGINS apply in addition.
+  allowedOrigins?: string[];
 }
 
 export const CONFIG_DIR  = join(homedir(), '.flownt-bridge');

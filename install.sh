@@ -6,6 +6,16 @@
 # Lädt die passende fertige Binary aus den GitHub-Releases (kein Node/Repo nötig),
 # löst die macOS-Quarantäne automatisch, richtet Autostart ein (launchd bzw. systemd)
 # und startet die Bridge. Erneutes Ausführen aktualisiert auf die neueste Version.
+#
+# Linux (systemd): optional settings passed to the installer are stored in
+# flownt-bridge.env (mode 0600) next to the binary and kept on later updates, e.g. to
+# reach the web UI from other devices on the LAN (Raspberry Pi):
+#
+#   curl -fsSL …/install.sh | sudo FLOWNT_BRIDGE_HOST=0.0.0.0 FLOWNT_BRIDGE_ADMIN_PASSWORD='…' bash
+#
+# Supported: FLOWNT_BRIDGE_HOST, FLOWNT_BRIDGE_ADMIN_PASSWORD, FLOWNT_ALLOWED_ORIGINS,
+# FLOWNT_EDGE_URL, FLOWNT_BRIDGE_ALLOWED_HOSTS. Without FLOWNT_BRIDGE_HOST the bridge
+# listens on this computer only (127.0.0.1).
 set -euo pipefail
 
 REPO="Buba2017/flownt-bridge"
@@ -80,6 +90,19 @@ EOF
   RUN_HINT="launchctl unload $PLIST   # stoppen"
   LOG_HINT="tail -f $INSTALL_DIR/bridge.log"
 else
+  # Settings for the service (see header). Values are double-quoted for systemd.
+  ENV_FILE="$INSTALL_DIR/flownt-bridge.env"
+  OLD_UMASK="$(umask)"; umask 077   # the file may hold the admin password
+  for VAR in FLOWNT_BRIDGE_HOST FLOWNT_BRIDGE_ADMIN_PASSWORD FLOWNT_ALLOWED_ORIGINS FLOWNT_EDGE_URL FLOWNT_BRIDGE_ALLOWED_HOSTS; do
+    VAL="${!VAR:-}"
+    [ -z "$VAL" ] && continue
+    touch "$ENV_FILE"
+    { grep -v "^${VAR}=" "$ENV_FILE" || true; } > "$ENV_FILE.tmp"
+    ESC="$(printf '%s' "$VAL" | sed -e 's/[\\"$`]/\\&/g')"
+    printf '%s="%s"\n' "$VAR" "$ESC" >> "$ENV_FILE.tmp"
+    mv "$ENV_FILE.tmp" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+  done
+  umask "$OLD_UMASK"
   UNIT="[Unit]
 Description=Flownt Bridge — 3D-Drucker Monitoring & Etikettendruck
 After=network-online.target
@@ -91,7 +114,8 @@ ExecStart=$BIN
 Restart=always
 RestartSec=15
 SyslogIdentifier=flownt-bridge
-Environment=NODE_ENV=production"
+Environment=NODE_ENV=production
+EnvironmentFile=-$ENV_FILE"
   if [ "$(id -u)" = "0" ]; then
     # Root/Pi → System-Service
     SVC_USER="${SUDO_USER:-$(getent passwd | awk -F: '$3>=1000 && $3<65534 && $6 ~ /^\/home/ {print $1; exit}')}"
@@ -121,10 +145,14 @@ fi
 
 # 4) Adresse ermitteln + Abschluss
 sleep 2
-if [ "$PLATFORM" = "macos" ]; then
-  IP="localhost"
-else
-  IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; IP="${IP:-localhost}"
+IP="localhost"
+LAN=0
+if [ "$PLATFORM" = "linux" ] && [ -f "$ENV_FILE" ]; then
+  BIND="$(sed -n 's/^FLOWNT_BRIDGE_HOST="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$ENV_FILE" | tail -1)"
+  case "$BIND" in
+    ""|localhost|127.*|::1|"[::1]") ;;
+    *) LAN=1; IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; IP="${IP:-localhost}" ;;
+  esac
 fi
 say ""
 say "${GREEN}${BOLD}✓ Flownt Bridge läuft!${NC}"
@@ -133,4 +161,14 @@ say "  Web-Oberfläche:  ${BOLD}http://${IP}:${PORT}${NC}"
 say "  Dort wählst du, was diese Bridge tun soll (Drucker überwachen / Etiketten drucken)."
 say "  Logs:            ${LOG_HINT}"
 say "  Stoppen:         ${RUN_HINT}"
-say ""
+if [ "$PLATFORM" = "linux" ] && [ "$LAN" = "0" ]; then
+  say ""
+  say "  ${YELLOW}Die Oberfläche ist nur auf diesem Gerät erreichbar (127.0.0.1).${NC} Von einem anderen Rechner:"
+  say "    ssh -L ${PORT}:127.0.0.1:${PORT} $(id -un)@$(hostname)   →   http://localhost:${PORT}"
+  say "  Oder fürs ganze Heimnetz freigeben (mit Passwort):"
+  say "    curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo FLOWNT_BRIDGE_HOST=0.0.0.0 FLOWNT_BRIDGE_ADMIN_PASSWORD='…' bash"
+elif [ "$LAN" = "1" ] && ! grep -q '^FLOWNT_BRIDGE_ADMIN_PASSWORD=' "$ENV_FILE"; then
+  say ""
+  say "  ${YELLOW}Achtung: im Netzwerk erreichbar, aber ohne Admin-Passwort.${NC} Setze FLOWNT_BRIDGE_ADMIN_PASSWORD."
+fi
+say """"

@@ -136,7 +136,17 @@ Der Installer:
 Wer einen eigenen Build (z. B. mit Änderungen) als Dienst betreiben will, startet
 `node dist/bundle.cjs` über eine eigene systemd-Unit — siehe *Server-Betrieb* unten.
 
-Danach erreichbar unter `http://<Pi-IP-Adresse>:7432` — im Browser auf jedem Gerät im Heimnetz.
+Die Oberfläche lauscht standardmäßig nur auf dem Pi selbst (`127.0.0.1`). Für den Zugriff
+von anderen Geräten im Heimnetz den Installer mit Bind-Adresse **und Admin-Passwort** ausführen —
+die Werte landen in `/opt/flownt-bridge/flownt-bridge.env` (0600) und bleiben bei Updates erhalten:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Buba2017/flownt-bridge/main/install.sh \
+  | sudo FLOWNT_BRIDGE_HOST=0.0.0.0 FLOWNT_BRIDGE_ADMIN_PASSWORD='ein-langes-passwort' bash
+```
+
+Danach erreichbar unter `http://<Pi-IP-Adresse>:7432`. Ohne Freigabe: `ssh -L 7432:127.0.0.1:7432 pi@<Pi-IP>`
+und `http://localhost:7432` öffnen.
 
 ```bash
 journalctl -fu flownt-bridge      # Live-Logs
@@ -154,17 +164,22 @@ git pull && npm run build && sudo bash install.sh
 ## Server-Betrieb / eigene Flownt-Instanz
 
 Für den Dauerbetrieb auf einem gemeinsam genutzten Linux-Server und für selbst gehostete
-Flownt-Instanzen liest die Bridge drei optionale Umgebungsvariablen (siehe `.env.example`):
+Flownt-Instanzen liest die Bridge diese optionalen Umgebungsvariablen (siehe `.env.example`):
 
 | Variable | Standard | Zweck |
 |---|---|---|
 | `FLOWNT_EDGE_URL` | flownt.app | Supabase-Edge-Functions-URL der eigenen Flownt-Instanz (`https://<ref>.supabase.co/functions/v1`) |
-| `FLOWNT_BRIDGE_HOST` | alle Interfaces | Bind-Adresse der Web-Oberfläche, z. B. `127.0.0.1` |
+| `FLOWNT_BRIDGE_HOST` | `127.0.0.1` + `::1` | Bind-Adresse. Nur explizit gesetzt (z. B. `0.0.0.0`) ist die Bridge im LAN erreichbar |
 | `FLOWNT_BRIDGE_PORT` | `7432` | Port der Web-Oberfläche |
+| `FLOWNT_BRIDGE_ADMIN_PASSWORD` | – | Passwort für die Setup-Oberfläche (Sitzungs-Cookie, 12 h). **Pflicht, sobald die Bridge im LAN erreichbar ist** |
+| `FLOWNT_ALLOWED_ORIGINS` | – | Zusätzliche Browser-Origins, die die Bridge ansprechen dürfen (kommagetrennt, z. B. `https://flownt.example.com`). `FLOWNT_CAMERA_ORIGINS` gilt weiter als Alias |
+| `FLOWNT_BRIDGE_ALLOWED_HOSTS` | – | Zusätzliche Hostnamen, unter denen die Oberfläche aufgerufen wird (Schutz gegen DNS-Rebinding; IPs, `localhost`, `*.local` und einteilige Namen sind immer erlaubt) |
+| `FLOWNT_LOG_FILE` / `--log-file` | – | Log in eine Datei mit Rotation (5 MB × 3) statt stdout |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` oder `error` |
 
-Die Web-Oberfläche hat **keine Anmeldung** und zeigt Tokens/Access Codes im Setup-Formular.
-Auf einem Server deshalb `FLOWNT_BRIDGE_HOST=127.0.0.1` setzen und die Oberfläche per SSH-Tunnel
-öffnen: `ssh -L 7432:127.0.0.1:7432 user@server` → `http://localhost:7432`.
+Auf einem Server die Oberfläche auf `127.0.0.1` lassen und per SSH-Tunnel öffnen:
+`ssh -L 7432:127.0.0.1:7432 user@server` → `http://localhost:7432`. Beim Start mit einer
+Nicht-Loopback-Adresse schreibt die Bridge eine Warnung ins Log.
 
 Beispiel-Unit mit eigenem Systembenutzer:
 
@@ -189,6 +204,24 @@ ReadWritePaths=/var/lib/flownt-bridge
 [Install]
 WantedBy=multi-user.target
 ```
+
+---
+
+## Security model of the local API
+
+| Endpoint | Who may call it |
+|---|---|
+| Setup UI (`/`, `/setup/*`, `/pair`, `/access-codes`, `/bambu-cloud`, `/api/state`, …) | Same-origin only. Every form carries a per-process CSRF token and the `Origin`/`Referer` must match the address the browser used (works through SSH tunnels). With `FLOWNT_BRIDGE_ADMIN_PASSWORD` a login is required. Stored tokens, access codes and passwords are never rendered back; empty secret fields keep the stored value. |
+| `GET /api/version` | Anyone; CORS only for allowed origins. Returns `{ version, command_auth: "bearer" }`. |
+| `POST /printer/command` | Allowed origin **and** `Authorization: Bearer <Flownt bridge token of that printer>`. Without `Origin` (scripts) only from this computer. |
+| `POST /dymo/print` | Allowed origin from a browser on this computer, or `Authorization: Bearer <token of any printer on this bridge>`. |
+| `GET /camera/stream` | `Authorization: Bearer <printer token>`; allowed origin for browsers. |
+
+Allowed origins: `https://flownt.app`, `https://www.flownt.app`, `capacitor://localhost`,
+`https://localhost`, `http://localhost:<port>` / `http://127.0.0.1:<port>` (development), plus
+`FLOWNT_ALLOWED_ORIGINS` and the addresses saved under **Settings → Additional Flownt addresses**.
+Requests whose `Host` is a public DNS name not listed in `FLOWNT_BRIDGE_ALLOWED_HOSTS` are refused
+(DNS-rebinding protection).
 
 ---
 
@@ -257,7 +290,8 @@ The page auto-refreshes every 8 seconds.
 - `⚠ Druckdatei nicht via FTPS gefunden` — when all FTPS paths fail
 - `✓ Drucklog erstellt: <filename>` — after job_complete lands in Flownt
 
-**JSON API:** `http://localhost:7432/api/state` — returns the full printer snapshot + event log as JSON.
+**JSON API:** `http://localhost:7432/api/state` — returns the full printer snapshot + event log as JSON
+(behind the admin login when `FLOWNT_BRIDGE_ADMIN_PASSWORD` is set).
 
 ---
 

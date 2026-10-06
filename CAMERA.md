@@ -26,9 +26,11 @@ an unknown model does not report its endpoint, select **X1 / H2 / P2 (RTSP)**.
 If the printer reports liveview disabled, enable it on the printer before retrying.
 
 For self-hosted Flownt, allow its exact browser origin using
-`FLOWNT_CAMERA_ORIGINS=https://flownt.example.com` (comma-separated for several).
-These environment variables are read at process startup, not from a `.env` file.
-Camera CORS permissions are separate from the existing printer-command routes.
+`FLOWNT_ALLOWED_ORIGINS=https://flownt.example.com` (comma-separated for several;
+the older `FLOWNT_CAMERA_ORIGINS` still works) or under **Settings → Additional Flownt
+addresses** in the bridge UI. Environment variables are read at process startup, not
+from a `.env` file. The camera, printer-command and label-printing routes share this
+allowlist.
 
 ## Behavior
 
