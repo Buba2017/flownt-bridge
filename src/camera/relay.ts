@@ -4,7 +4,7 @@ import type { PrinterConfig } from '../config.js';
 import { BambuJpegParser, cameraLogin, JpegParser } from './protocol.js';
 
 export type CameraTransport = 'auto' | 'jpeg' | 'rtsp';
-export type CameraErrorCode = 'camera_unavailable' | 'ffmpeg_missing' | 'invalid_camera_config' | 'camera_reconfigured';
+export type CameraErrorCode = 'camera_unavailable' | 'liveview_disabled' | 'ffmpeg_missing' | 'invalid_camera_config' | 'camera_reconfigured';
 export class CameraError extends Error {
   constructor(public readonly code: CameraErrorCode) { super(code); }
 }
@@ -19,12 +19,14 @@ export function resolveCameraSource(cfg: PrinterConfig, reportedUrl?: string | n
     if (!address.hostname || address.username || address.password || address.pathname !== '/' || address.search || address.hash) throw new Error();
   } catch { throw new CameraError('invalid_camera_config'); }
   const host = address.hostname.replace(/^\[|\]$/g, '');
-  // Known X1/P2/H2 serial prefixes plus printer-reported ipcam.rtsp_url.
+  // Known X1/P2/H2/X2 serial prefixes plus printer-reported ipcam.rtsp_url.
   // A manual transport setting handles unknown/new models.
+  // 20P = X2D, 31B = H2C (observed on real printers).
   const transport = cfg.cameraTransport && cfg.cameraTransport !== 'auto' ? cfg.cameraTransport
-    : (/^rtsps?:\/\//i.test(reportedUrl ?? '') || /^(00M|00W|03W|22E|093|094)/i.test(cfg.adapterSerial) ? 'rtsp' : 'jpeg');
+    : (/^rtsps?:\/\//i.test(reportedUrl ?? '') || /^(00M|00W|03W|22E|093|094|20P|31B)/i.test(cfg.adapterSerial) ? 'rtsp' : 'jpeg');
   if (transport === 'jpeg') return { transport, host, accessCode: cfg.adapterApiKey };
-  if (reportedUrl === 'disable') throw new CameraError('camera_unavailable');
+  // RTSP models report rtsp_url "disable" while LAN liveview is switched off on the printer.
+  if (reportedUrl === 'disable') throw new CameraError('liveview_disabled');
   let url: URL;
   try {
     url = new URL(reportedUrl || `rtsps://${address.hostname}:322/streaming/live/1`);

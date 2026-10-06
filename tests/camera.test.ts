@@ -58,7 +58,7 @@ test('RTSP auto-detection, explicit overrides and reported endpoints stay on the
   assert.equal(resolveCameraSource(cfg).transport, 'jpeg');
   assert.equal(resolveCameraSource(cfg, 'disable').transport, 'jpeg');
   const x1 = { ...cfg, adapterSerial: '00MTEST' };
-  for (const prefix of ['00M', '00W', '03W', '22E', '093', '094']) {
+  for (const prefix of ['00M', '00W', '03W', '22E', '093', '094', '20P', '31B']) {
     assert.equal(resolveCameraSource({ ...cfg, adapterSerial: `${prefix}TEST` }).transport, 'rtsp');
   }
   assert.equal(resolveCameraSource(x1).rtspUrl, 'rtsps://bblp:12345678@192.168.1.20:322/streaming/live/1');
@@ -66,7 +66,7 @@ test('RTSP auto-detection, explicit overrides and reported endpoints stay on the
   assert.equal(new URL(source.rtspUrl!).hostname, cfg.adapterUrl);
   assert.equal(new URL(source.rtspUrl!).pathname, '/streaming/live/2');
   assert.equal(resolveCameraSource({ ...x1, cameraTransport: 'jpeg' }).transport, 'jpeg');
-  assert.throws(() => resolveCameraSource(x1, 'disable'), /camera_unavailable/);
+  assert.throws(() => resolveCameraSource(x1, 'disable'), /liveview_disabled/);
   assert.throws(() => resolveCameraSource(x1, 'file:///etc/passwd'), /invalid_camera_config/);
   assert.throws(() => resolveCameraSource({ ...cfg, adapterUrl: 'http://user:password@printer/' }));
 });
