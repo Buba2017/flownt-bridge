@@ -246,6 +246,7 @@ const TA = {
     pairBanner: 'Diese Bridge ist noch nicht mit Flownt gekoppelt.',
     linkedAs: (n: string) => `Mit Flownt gekoppelt als „${n}"`,
     lastSync: 'letzter Abgleich',
+    alreadyPaired: (n: string) => `Diese Bridge ist bereits mit Flownt gekoppelt („${n}"). Das ist nur nötig, wenn sie in Flownt entfernt wurde — ein neuer Code ersetzt die Kopplung, Drucker und Access Codes bleiben erhalten.`,
   },
   en: {
     missing: 'Access code missing',
@@ -282,6 +283,7 @@ const TA = {
     pairBanner: 'This bridge is not paired with Flownt yet.',
     linkedAs: (n: string) => `Paired with Flownt as "${n}"`,
     lastSync: 'last sync',
+    alreadyPaired: (n: string) => `This bridge is already paired with Flownt ("${n}"). Pairing again is only needed if it was removed in Flownt — a new code replaces the pairing, printers and access codes are kept.`,
   },
 } as const;
 function ta() { return TA[getLang()]; }
@@ -304,6 +306,7 @@ function pairPage(error?: string): string {
   return simplePage(a.pairTitle, `
   <h1>${a.pairTitle}</h1>
   ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
+  ${linkStatus().link ? `<div class="ok-banner">${escAttr(a.alreadyPaired(linkStatus().link!.name))}</div>` : ''}
   <p class="hint">${a.pairHint}</p>
   <form method="POST" action="/pair">
     <label>${a.pairCode}</label>
