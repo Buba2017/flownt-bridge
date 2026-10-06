@@ -122,3 +122,20 @@ test('outbox shared by the bridge is the one passed in', async () => {
   await runSteps([() => printing(), () => finished()], { dir, backend: be, clock, outbox });
   assert.equal(outbox.stats().pending, 1);
 });
+
+test('restart while the printer already shows FAILED reports that job as failed', async () => {
+  const dir = tempDir(), be = new FakeBackend(), clock = new Clock();
+  const a1 = new BambuAdapter('192.0.2.1', 'S', 'c', 'p1', { autoConnect: false, fetchFiles: false });
+  const run = loadFrame('x2d', 'running-mid-print');
+  await runSteps([async () => { a1.handleMessage(json(run)); return a1.getSnapshot(); }], { dir, backend: be, clock });
+  // New bridge process: fresh adapter, the printer reports the same job as FAILED.
+  const a2 = new BambuAdapter('192.0.2.1', 'S', 'c', 'p1', { autoConnect: false, fetchFiles: false });
+  const failed = loadFrame('x2d', 'running-mid-print');
+  Object.assign(failed.print!, { gcode_state: 'FAILED', print_error: 0x0500_4004 });
+  await runSteps([async () => { a2.handleMessage(json(failed)); return a2.getSnapshot(); }, async () => a2.getSnapshot()],
+    { dir, backend: be, clock });
+  const [b] = be.delivered('job_failed');
+  assert.equal(b.outcome, 'failed');
+  assert.equal(b.failure_reason, '0500_4004');
+  assert.equal(be.delivered('job_complete').length, 0);
+});

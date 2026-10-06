@@ -646,7 +646,9 @@ export class BambuAdapter implements Adapter {
     return {
       status,
       stale: this.stale,
-      jobKey: this.jobKey,
+      // The printer's current/last job, also when it is no longer active (FINISH/FAILED
+      // after a bridge restart must still match the persisted job session).
+      jobKey: jobIdentity(st).key ?? this.jobKey,
       jobResult: gcodeState !== undefined ? bambuJobResult(gcodeState, st.print_error, this.stopRequested) : prev.jobResult,
       printFile: st.subtask_name || undefined,
       sourceJobId: jobIdentity(st).sourceJobId,
