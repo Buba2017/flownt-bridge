@@ -8,6 +8,9 @@ import { BambuCloudClient } from './bambu-cloud.js';
 import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
 
+// Last preview delivered per printer config (object identity = one fetch of one job).
+const sentPreviews = new Map<string, PrinterSnapshot['printPreview']>();
+
 async function push(
   cfg: PrinterConfig,
   snapshot: PrinterSnapshot,
@@ -33,6 +36,10 @@ async function push(
   if (snapshot.activeMqttSlot != null) body.ams_active_slot = snapshot.activeMqttSlot;
   if (snapshot.amsHumidity?.length) body.ams_humidity = snapshot.amsHumidity;
   if (snapshot.amsUnits?.length) body.ams_units = snapshot.amsUnits;
+  // The preview is sent once per job (the backend keeps it until the next job).
+  if (snapshot.printPreview && sentPreviews.get(cfg.id) !== snapshot.printPreview) {
+    body.print_preview = { print_file: snapshot.printPreview.printFile, png_base64: snapshot.printPreview.png.toString('base64') };
+  }
   if (eventType === 'job_complete') {
     if (snapshot.parsedFilamentWeights?.length) {
       // Stufe B: pro Materialzeile die quell-abstrahierte Slot-Referenz mitführen.
@@ -59,6 +66,7 @@ async function push(
     const text = await res.text().catch(() => '');
     throw new Error(`bridge-ingest ${res.status}: ${text}`);
   }
+  if (body.print_preview && snapshot.printPreview) sentPreviews.set(cfg.id, snapshot.printPreview);
   const data = await res.json().catch(() => ({})) as Record<string, unknown>;
   return typeof data.print_log_id === 'string' ? data.print_log_id : undefined;
 }

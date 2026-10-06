@@ -2,7 +2,7 @@ import mqtt from 'mqtt';
 import { Client as FTPClient, FileInfo } from 'basic-ftp';
 import { Writable } from 'stream';
 import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, JobResult, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
-import { parseFileBuffer } from './bambu-file-parser.js';
+import { extractPlatePreview, parseFileBuffer } from './bambu-file-parser.js';
 import { addEvent } from '../events.js';
 
 interface BambuAmsTray {
@@ -225,6 +225,10 @@ export class BambuAdapter implements Adapter {
   private lastMessageAt = 0;
   // Zuletzt gemeldeter echter Feuchte-Prozentwert je AMS-Unit (aus mc_print.push_info).
   // Wird beim naechsten push_status an amsHumidity[].humidity_pct angehaengt.
+  // Job whose print file was already fetched (weights + preview); also covers jobs that
+  // were running when the bridge started, not only new ones.
+  private fetchedJobKey: string | null = null;
+  private plateIndex: number | undefined; // from gcode_file ".../plate_<n>.gcode"
   private lastHumSig = ''; // fuer ein Log nur bei Aenderung der AMS-Feuchte
   private disposed = false;
 
@@ -377,6 +381,8 @@ export class BambuAdapter implements Adapter {
         // Carry parsedFilamentWeights forward (cleared at start of each new print)
         const isNewPrint = prevStatus !== 'printing' && prevStatus !== 'paused' && newStatus === 'printing';
         const parsedFilamentWeights = isNewPrint ? null : this.snapshot.parsedFilamentWeights;
+        const plateM = typeof p.gcode_file === 'string' ? /plate_(\d+)\.gcode/i.exec(p.gcode_file) : null;
+        if (plateM) this.plateIndex = parseInt(plateM[1], 10);
 
         this.snapshot = {
           status: newStatus,
@@ -399,10 +405,14 @@ export class BambuAdapter implements Adapter {
           // Vordrucks und der Verbrauch wird dessen AMS-Slot zugeordnet (Bug Test 3).
           filamentMapping: (Array.isArray(p.mapping) && p.mapping.length > 0) ? p.mapping : (isNewPrint ? undefined : this.snapshot.filamentMapping),
           parsedFilamentWeights,
+          printPreview: isNewPrint ? null : this.snapshot.printPreview,
         };
 
-        // Bei Druckstart: Druckdatei via FTPS laden und parsen
-        if (isNewPrint && this.snapshot.printFile) {
+        // Bei Druckstart (oder laufendem Druck nach Bridge-Start): Druckdatei via FTPS
+        // laden und parsen — einmal je Job.
+        const jobKey = this.snapshot.printFile ? `${this.snapshot.sourceJobId ?? ''}|${this.snapshot.printFile}` : null;
+        if (jobKey && (newStatus === 'printing' || newStatus === 'paused') && jobKey !== this.fetchedJobKey) {
+          this.fetchedJobKey = jobKey;
           this.fetchPrintFile(this.snapshot.printFile).catch(err =>
             console.error('[bambu] fetchPrintFile:', err),
           );
@@ -435,6 +445,12 @@ export class BambuAdapter implements Adapter {
       }
       this.scheduleReconnect();
     });
+  }
+
+  /** Plate thumbnail of the job's .3mf, tied to the print file it belongs to. */
+  private preview(printFile: string, buf: Buffer): PrinterSnapshot['printPreview'] {
+    const png = extractPlatePreview(buf, this.plateIndex);
+    return png ? { printFile, png } : null;
   }
 
   private async fetchPrintFile(subtaskName?: string): Promise<void> {
@@ -474,7 +490,7 @@ export class BambuAdapter implements Adapter {
         ftp.close();
         const buf = writable.getBuffer();
         const weights: FilamentWeight[] = parseFileBuffer(filename, buf);
-        this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights };
+        this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, buf) };
         console.log(`[bambu] Druckdatei geladen: ${filename} → ${weights.length} Filament(e) geparst`);
         addEvent(this.printerId, 'success', `Druckdatei geladen: ${filename} (${weights.length} Slot(s))`);
         return;
@@ -499,7 +515,7 @@ export class BambuAdapter implements Adapter {
     const hit = await this.searchSdForFile(name);
     if (hit) {
       const weights: FilamentWeight[] = parseFileBuffer(hit.path, hit.buf);
-      this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights };
+      this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, hit.buf) };
       console.log(`[bambu] Druckdatei via SD-Suche geladen: ${hit.path} → ${weights.length} Filament(e) geparst`);
       addEvent(this.printerId, 'success', `Druckdatei geladen (SD-Suche): ${hit.path.split('/').pop()} (${weights.length} Slot(s))`);
       return;

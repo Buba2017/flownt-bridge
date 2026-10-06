@@ -104,6 +104,12 @@ export interface MaterialLine {
   measureSource: 'slicer_file' | 'bambu_cloud';   // Quelle der Gewichtsmessung
 }
 
+/** Slicer plate thumbnail of a print job (Bambu: Metadata/plate_<n>.png in the .3mf). */
+export interface PrintPreview {
+  print_file: string;
+  png_base64: string;
+}
+
 /**
  * Wire-Body des POST an `${FLOWNT_EDGE_URL}/bridge-ingest`.
  * Pflicht: `auth_token` + `event_type`. Alle übrigen Felder sind optional und entsprechen
@@ -128,6 +134,9 @@ export interface IngestBody {
   ams_active_slot?: number;
   ams_humidity?: AmsHumidityUnit[];
   ams_units?: AmsUnitInfo[];
+  /** Plate preview of the running job (PNG rendered by the slicer, taken from the print
+   *  file). Sent once per job; `print_file` identifies the job it belongs to. */
+  print_preview?: PrintPreview;
   // Nur job_complete: verbrauchtes Material + optionale Mess-/Energie-Quellen
   filament_weights?: MaterialLine[];
   cloud_weight_g?: number;

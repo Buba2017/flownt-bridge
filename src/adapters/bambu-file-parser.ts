@@ -30,6 +30,27 @@ function parseBgcode(buffer: Buffer): FilamentWeight[] {
     .filter(fw => !isNaN(fw.grams) && fw.grams > 0);
 }
 
+// Slicer plate thumbnails larger than this are not forwarded (Bambu's are ~50–300 KB).
+const MAX_PREVIEW_BYTES = 1_500_000;
+
+/**
+ * Plate preview of a .3mf print file: the PNG Bambu Studio / OrcaSlicer render into
+ * Metadata/plate_<n>.png. Falls back to the first plate image. Null if there is none.
+ */
+export function extractPlatePreview(buffer: Buffer, plate?: number): Buffer | null {
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(new Uint8Array(buffer), {
+      filter: f => /^Metadata\/plate_\d+\.png$/i.test(f.name) && f.originalSize <= MAX_PREVIEW_BYTES,
+    });
+  } catch {
+    return null;
+  }
+  const key = (plate != null && files[`Metadata/plate_${plate}.png`] ? `Metadata/plate_${plate}.png` : undefined)
+    ?? Object.keys(files).sort()[0];
+  return key ? Buffer.from(files[key]) : null;
+}
+
 function parse3mf(buffer: Buffer): FilamentWeight[] {
   let files: Record<string, Uint8Array>;
   try {
