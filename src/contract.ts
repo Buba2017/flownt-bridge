@@ -17,6 +17,13 @@
 // Stufe B abstrahierte die Slot-/Spulen-Identität (`MaterialLine`/`SlotRef`);
 // C bringt Moonraker auf Parität (job_failed, Slot-Ref).
 
+/**
+ * Contract version. Bump on every change to the wire format; the bridge sends it as
+ * `contract_version`, bridge-ingest warns (but still accepts) when it is older.
+ * 1 = everything before the field existed, 2 = job timing/outcome/partial usage/tray_uuid.
+ */
+export const CONTRACT_VERSION = 2;
+
 /** Kanonische Event-Typen, die die Bridge an Flownt sendet. */
 export type EventType = 'heartbeat' | 'status_update' | 'job_complete' | 'job_failed';
 
@@ -116,8 +123,25 @@ export interface MaterialLine {
   grams: number;
   color?: string;
   slotRef: SlotRef;                               // abstrahierte Slot-/Lagerplatz-Identität
-  measureSource: 'slicer_file' | 'bambu_cloud';   // Quelle der Gewichtsmessung
+  /**
+   * Source of `grams`:
+   * - `slicer_file` / `bambu_cloud`: full usage of a finished job.
+   * - `estimated_partial`: a failed/cancelled job; slicer grams scaled by the progress
+   *   reached (`estimated_grams` holds the unscaled slicer value).
+   */
+  measureSource: 'slicer_file' | 'bambu_cloud' | 'estimated_partial';
+  /** Slicer estimate for the whole job in g (contract ≥ 2). */
+  estimated_grams?: number;
+  /**
+   * RFID spool identity (Bambu tray_uuid) seen in the slot this line was printed from,
+   * null for spools without a readable tag (contract ≥ 2). The backend books against the
+   * spool with this `rfid_uid` first and only falls back to the slot's storage location.
+   */
+  tray_uuid?: string | null;
 }
+
+/** How a job ended (contract ≥ 2). */
+export type JobOutcome = 'completed' | 'failed' | 'cancelled';
 
 /** Slicer plate thumbnail of a print job (Bambu: Metadata/plate_<n>.png in the .3mf). */
 export interface PrintPreview {
@@ -143,7 +167,9 @@ export interface IngestBody {
   temp_bed?: number;
   eta_s?: number;
   duration_min?: number;
-  source_job_id?: string;   // eindeutige Bambu-Job-ID (nur job_complete) — Backend dedupt gegen Re-Emission
+  /** Unique job id (job_complete and, from contract 2, job_failed). The backend books a
+   *  job at most once per (printer, source_job_id), so the bridge may resend freely. */
+  source_job_id?: string;
   live_power_w?: number;
   ams_state?: AmsSlot[];
   ams_active_slot?: number;
@@ -157,7 +183,22 @@ export interface IngestBody {
   hms?: HmsAlert[];
   /** Printer error code "MMMM_EEEE" of the current/last job, null if none. */
   print_error?: string | null;
-  // Nur job_complete: verbrauchtes Material + optionale Mess-/Energie-Quellen
+  /** Wire format version of this body (CONTRACT_VERSION); absent = 1. */
+  contract_version?: number;
+  // job_complete / job_failed (contract ≥ 2): timing and outcome
+  /** Job start, ISO 8601 UTC (from the printer's job start where available). */
+  started_at?: string;
+  /** Job end, ISO 8601 UTC, taken when the bridge saw the job end (not when it was sent). */
+  finished_at?: string;
+  /** Slicer-predicted print time in minutes. */
+  estimated_duration_min?: number;
+  outcome?: JobOutcome;
+  /** Why a job failed: printer error "MMMM_EEEE" or the most severe HMS code; null if unknown. */
+  failure_reason?: string | null;
+  /** Progress (0–100) reached before a job failed or was cancelled. */
+  last_progress_pct?: number;
+  // job_complete (full) / job_failed (partial, contract ≥ 2): verbrauchtes Material +
+  // optionale Mess-/Energie-Quellen
   filament_weights?: MaterialLine[];
   cloud_weight_g?: number;
   energy_wh?: number;
