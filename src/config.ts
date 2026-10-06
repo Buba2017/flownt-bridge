@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, chmodSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -63,21 +63,32 @@ function migrate(raw: Record<string, unknown>): MultiConfig {
 
 export function loadMultiConfig(): MultiConfig {
   if (!existsSync(CONFIG_FILE)) return { version: 2, language: 'de', printers: [] };
+  let raw: Record<string, unknown>;
   try {
-    const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) as Record<string, unknown>;
-    if (raw.version === 2) return raw as unknown as MultiConfig;
-    // Legacy single-printer format → auto-migrate and persist
-    const cfg = migrate(raw);
-    saveMultiConfig(cfg);
-    return cfg;
-  } catch {
+    raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) as Record<string, unknown>;
+  } catch (e) {
+    // Never silently fall back to an empty config: the next save would overwrite
+    // the user's printers. Keep the broken file next to it and start empty.
+    const backup = `${CONFIG_FILE}.corrupt-${Date.now()}`;
+    try { renameSync(CONFIG_FILE, backup); } catch { /* keep going */ }
+    console.error(`[flownt-bridge] config.json unreadable (${(e as Error).message}) — moved to ${backup}`);
     return { version: 2, language: 'de', printers: [] };
   }
+  if (raw.version === 2) return raw as unknown as MultiConfig;
+  // Legacy single-printer format → auto-migrate and persist
+  const cfg = migrate(raw);
+  saveMultiConfig(cfg);
+  return cfg;
 }
 
 export function saveMultiConfig(cfg: MultiConfig): void {
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+  // The file holds the Flownt token and printer access codes: owner-only
+  // permissions, and an atomic replace so a crash never leaves half a file.
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  const tmp = `${CONFIG_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(cfg, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  renameSync(tmp, CONFIG_FILE);
+  try { chmodSync(CONFIG_FILE, 0o600); } catch { /* e.g. Windows */ }
 }
 
 export function newPrinterId(): string {
