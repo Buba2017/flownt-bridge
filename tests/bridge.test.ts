@@ -56,6 +56,20 @@ test('restart mid-print keeps start time, mapping and weights', async () => {
   assert.deepEqual(done.filament_weights?.map(l => [l.filamentIndex, l.grams]), [[7, 12.5]]);
 });
 
+test('job first seen mid-print: start time estimated from progress, no partial energy', async () => {
+  const dir = tempDir(), be = new FakeBackend(), clock = new Clock();
+  const t0 = clock.t;
+  // H2C after a bridge restart: no gcode_start_time, 73 % done, 84 min left.
+  await runSteps([() => printing({ progressPct: 73, etaSec: 84 * 60 }), () => finished()], { dir, backend: be, clock });
+  const [done] = be.delivered('job_complete');
+  assert.ok(done, 'job_complete sent');
+  const startedAt = Date.parse(done.started_at!);
+  const expected = t0 - (84 * 60_000 * 73) / 27;
+  assert.ok(Math.abs(startedAt - expected) < 1000, `started_at ${done.started_at}`);
+  assert.ok(done.duration_min! >= 227 && done.duration_min! <= 229, `duration ${done.duration_min}`);
+  assert.equal(done.energy_wh, undefined);
+});
+
 test('connection drop mid-print is not a new job', async () => {
   const dir = tempDir(), be = new FakeBackend(), clock = new Clock();
   const t0 = clock.t;

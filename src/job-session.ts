@@ -20,7 +20,9 @@ export interface JobSession {
   sourceJobId: string;
   printFile?: string;
   startedAt: number;                 // epoch ms
-  startedAtSource: 'printer' | 'bridge';
+  /** printer: its own start time; bridge: first seen at the start; estimated: adopted
+   *  mid-print (bridge restart, no printer start time), back-computed from progress. */
+  startedAtSource: 'printer' | 'bridge' | 'estimated';
   energyStartWh: number | null;
   filamentMapping: number[];
   parsedFilamentWeights: FilamentWeight[];
@@ -35,6 +37,19 @@ export interface JobSession {
   hms: HmsAlert[];
   stopRequested: boolean;
   updatedAt: number;
+}
+
+/**
+ * Time already printed when the bridge first sees a job mid-print and the printer sends
+ * no start time (H2C/X2D): elapsed = remaining × progress / (100 − progress). Null at the
+ * start of a job or without a usable progress/remaining time.
+ */
+export function adoptedElapsedMs(snap: PrinterSnapshot): number | null {
+  const pct = snap.progressPct;
+  const eta = snap.etaSec;
+  if (pct == null || eta == null || pct < 2 || pct >= 100 || eta <= 0) return null;
+  const ms = (eta * 1000 * pct) / (100 - pct);
+  return ms < 7 * 24 * 3_600_000 ? Math.round(ms) : null;
 }
 
 export type JobOutcomeValue = 'completed' | 'failed' | 'cancelled';
@@ -124,15 +139,17 @@ export class JobTracker {
     }
     if (!isActive(snap) || key == null) return {};
     const fromPrinter = snap.jobStartedAtS != null;
-    const startedAt = fromPrinter ? snap.jobStartedAtS! * 1000 : this.now();
+    const elapsedMs = fromPrinter ? null : adoptedElapsedMs(snap);
+    const startedAt = fromPrinter ? snap.jobStartedAtS! * 1000 : this.now() - (elapsedMs ?? 0);
     const started: JobSession = {
       version: 1,
       jobKey: key,
       sourceJobId: snap.sourceJobId || `${key}@${Math.round(startedAt / 1000)}`,
       printFile: snap.printFile,
       startedAt,
-      startedAtSource: fromPrinter ? 'printer' : 'bridge',
-      energyStartWh: energyWh,
+      startedAtSource: fromPrinter ? 'printer' : elapsedMs != null ? 'estimated' : 'bridge',
+      // Adopted mid-print: the meter delta would only cover the rest of the job.
+      energyStartWh: elapsedMs != null ? null : energyWh,
       filamentMapping: [],
       parsedFilamentWeights: [],
       estimatedDurationMin: null,

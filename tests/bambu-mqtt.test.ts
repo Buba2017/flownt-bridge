@@ -74,8 +74,12 @@ test('silent session is rebuilt, but not while the printer prepares a job', () =
     assert.equal(broker.connects(), connects, 'no reconnect during PREPARE');
     await waitFor(() => broker.connects() > connects, 3_000, 'reconnect once clearly dead');
 
-    await broker.publishReport(SERIAL, loadFrame('x2d', 'running-mid-print'));
-    await waitFor(async () => (await a.getSnapshot()).jobState === 'printing', 3_000, 'printing');
+    // Re-publish until seen: a frame sent before the new session has subscribed is lost.
+    const running = loadFrame('x2d', 'running-mid-print');
+    await waitFor(async () => {
+      await broker.publishReport(SERIAL, running);
+      return (await a.getSnapshot()).jobState === 'printing';
+    }, 3_000, 'printing');
     const c2 = broker.connects();
     await waitFor(() => broker.connects() > c2, 1_000, 'reconnect after 150 ms silence');
   },
