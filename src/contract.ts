@@ -34,6 +34,21 @@ export type PrinterStatus = 'idle' | 'printing' | 'paused' | 'error' | 'offline'
  */
 export const INGEST_ACCEPTED_STATUSES: readonly string[] = ['idle', 'printing', 'maintenance', 'offline', 'error'];
 
+/**
+ * Finer job state than `printer_status` (Bambu gcode_state):
+ * - `preparing`: heating, levelling, calibrating before the first layer (PREPARE/SLICING).
+ *   `printer_status` is already `printing` then — the printer is busy.
+ * - `finished` / `failed`: the last job ended (FINISH/FAILED); the plate may still be full.
+ */
+export type JobState = 'idle' | 'preparing' | 'printing' | 'paused' | 'finished' | 'failed';
+
+/** Active printer health message (Bambu HMS). */
+export interface HmsAlert {
+  /** "XXXX_XXXX_XXXX_XXXX", as shown on the printer and in the Bambu wiki. */
+  code: string;
+  severity: 'fatal' | 'serious' | 'common' | 'info' | 'unknown';
+}
+
 /** Ein AMS-Slot im Live-Zustand (Element von `ams_state` / `printers.live_ams_state`). */
 export interface AmsSlot {
   ams_unit: number;    // 0–3 (für daisy-chained AMS)
@@ -137,6 +152,11 @@ export interface IngestBody {
   /** Plate preview of the running job (PNG rendered by the slicer, taken from the print
    *  file). Sent once per job; `print_file` identifies the job it belongs to. */
   print_preview?: PrintPreview;
+  job_state?: JobState;
+  /** Active HMS messages (empty array = none). */
+  hms?: HmsAlert[];
+  /** Printer error code "MMMM_EEEE" of the current/last job, null if none. */
+  print_error?: string | null;
   // Nur job_complete: verbrauchtes Material + optionale Mess-/Energie-Quellen
   filament_weights?: MaterialLine[];
   cloud_weight_g?: number;

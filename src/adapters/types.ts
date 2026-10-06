@@ -1,8 +1,8 @@
 // AmsSlot, AmsHumidityUnit und PrinterStatus leben jetzt im geteilten Contract
 // (contract.ts, generiert aus supabase/functions/_shared/contract.ts im Haupt-Repo).
 // Re-Export, damit bestehende Importe aus adapters/types.js weiter funktionieren.
-export type { AmsSlot, AmsHumidityUnit, AmsUnitInfo, PrinterStatus } from '../contract.js';
-import type { AmsSlot, AmsHumidityUnit, AmsUnitInfo, PrinterStatus } from '../contract.js';
+export type { AmsSlot, AmsHumidityUnit, AmsUnitInfo, HmsAlert, JobState, PrinterStatus } from '../contract.js';
+import type { AmsSlot, AmsHumidityUnit, AmsUnitInfo, HmsAlert, JobState, PrinterStatus } from '../contract.js';
 
 // Normalisierter Job-Ausgang (Stufe C). Vom Adapter beim Terminal-Zustand gesetzt; sonst null.
 // completed = sauber beendet · aborted = abgebrochen (User-Stop/Cancel) · failed = Fehler.
@@ -30,6 +30,9 @@ export interface PrinterSnapshot {
   filamentMapping?: number[];     // Bambu print.mapping: Slicer-Filament-id (1-basiert) → physischer Tray-Code; 65535 = ungenutzt/extern
   parsedFilamentWeights?: FilamentWeight[] | null;
   printPreview?: { printFile: string; png: Buffer } | null; // slicer plate thumbnail of the running job
+  jobState?: JobState;          // finer job state (preparing / finished / failed …)
+  hms?: HmsAlert[];             // active printer health messages
+  printError?: string | null;   // "MMMM_EEEE" of the current/last job
   cloudWeightG?: number | null;
   powerW?: number | null;       // aktuelle Wirkleistung vom Smart-Plug (Shelly), falls konfiguriert
   energyWhUsed?: number | null; // gemessener Energieverbrauch des Drucks in Wh (Zähler Ende − Start)

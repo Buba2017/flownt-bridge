@@ -7,9 +7,9 @@ function round2(v: number): number {
   return Math.round(v * 100) / 100;
 }
 
-export function parseFileBuffer(filename: string, buffer: Buffer): FilamentWeight[] {
+export function parseFileBuffer(filename: string, buffer: Buffer, plate?: number): FilamentWeight[] {
   const base = (filename.split('/').pop() ?? filename).toLowerCase();
-  if (base.endsWith('.3mf')) return parse3mf(buffer);
+  if (base.endsWith('.3mf')) return parse3mf(buffer, plate);
   if (base.endsWith('.gcode') || base.endsWith('.gco') || base.endsWith('.g')) {
     return parseGcode(buffer.toString('utf-8'));
   }
@@ -51,7 +51,7 @@ export function extractPlatePreview(buffer: Buffer, plate?: number): Buffer | nu
   return key ? Buffer.from(files[key]) : null;
 }
 
-function parse3mf(buffer: Buffer): FilamentWeight[] {
+function parse3mf(buffer: Buffer, plate?: number): FilamentWeight[] {
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(new Uint8Array(buffer));
@@ -62,7 +62,14 @@ function parse3mf(buffer: Buffer): FilamentWeight[] {
   // Bambu Studio: Metadata/slice_info.config (XML mit used_g pro filament id)
   const bambuRaw = files['Metadata/slice_info.config'];
   if (bambuRaw) {
-    const xml = dec.decode(bambuRaw);
+    let xml = dec.decode(bambuRaw);
+    // Files sent from Bambu Studio contain only the printed plate. A project with several
+    // sliced plates lists each plate's filaments separately: count only the printed one.
+    const plates = [...xml.matchAll(/<plate>([\s\S]*?)<\/plate>/g)].map(m => m[1]);
+    if (plates.length > 1) {
+      const printed = plates.find(pl => new RegExp(`key="index"\\s+value="${plate ?? 1}"`).test(pl));
+      if (printed) xml = printed;
+    }
     const weights: FilamentWeight[] = [];
     for (const m of xml.matchAll(/<filament\b([^>]*)>/gi)) {
       const attrs = m[1];

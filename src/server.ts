@@ -1059,24 +1059,36 @@ export function startServer(callbacks: ServerCallbacks): void {
   });
   app.options('/printer/command', (_req, res) => res.sendStatus(204));
   app.post('/printer/command', async (req, res) => {
-    const body = req.body as PrinterCommand & { printerId?: string };
-    const { printerId, ...cmd } = body;
+    const body = req.body as PrinterCommand & { printerId?: string; flowntPrinterId?: string };
+    const { printerId, flowntPrinterId, ...cmd } = body;
     if (!(cmd as { type?: string }).type) return res.status(400).json({ ok: false, error: 'Missing command type' });
 
+    // The printer must be identified: by local id or by its Flownt printer id. Without
+    // one, only a bridge with exactly one running printer accepts the command — picking
+    // "the first running printer" could pause or stop the wrong machine.
     let adapter: Adapter | null | undefined;
     if (printerId) {
       adapter = printerStates.get(printerId)?.adapter;
+    } else if (flowntPrinterId) {
+      const local = loadMultiConfig().printers.find(p => p.flowntPrinterId === flowntPrinterId);
+      adapter = local ? printerStates.get(local.id)?.adapter : undefined;
     } else {
-      adapter = [...printerStates.values()].find(s => s.running)?.adapter;
+      const running = [...printerStates.values()].filter(s => s.running);
+      if (running.length > 1) {
+        return res.status(400).json({ ok: false, code: 'printer_required', error: 'Several printers are connected — printerId or flowntPrinterId is required' });
+      }
+      adapter = running[0]?.adapter;
     }
-    if (!adapter?.sendCommand) {
+    if (!adapter) return res.status(404).json({ ok: false, code: 'printer_not_found', error: 'Printer is not connected to this bridge' });
+    if (!adapter.sendCommand) {
       return res.status(503).json({ ok: false, error: 'Connected adapter does not support commands' });
     }
     try {
       await adapter.sendCommand(cmd as PrinterCommand);
       res.json({ ok: true });
     } catch (e) {
-      res.status(500).json({ ok: false, error: String(e) });
+      const rejected = (e as { code?: string }).code === 'command_rejected';
+      res.status(rejected ? 409 : 500).json({ ok: false, code: rejected ? 'command_rejected' : 'error', error: (e as Error).message ?? String(e) });
     }
   });
 

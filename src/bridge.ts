@@ -36,6 +36,9 @@ async function push(
   if (snapshot.activeMqttSlot != null) body.ams_active_slot = snapshot.activeMqttSlot;
   if (snapshot.amsHumidity?.length) body.ams_humidity = snapshot.amsHumidity;
   if (snapshot.amsUnits?.length) body.ams_units = snapshot.amsUnits;
+  if (snapshot.jobState) body.job_state = snapshot.jobState;
+  if (snapshot.hms) body.hms = snapshot.hms;
+  if (snapshot.printError !== undefined) body.print_error = snapshot.printError;
   // The preview is sent once per job (the backend keeps it until the next job).
   if (snapshot.printPreview && sentPreviews.get(cfg.id) !== snapshot.printPreview) {
     body.print_preview = { print_file: snapshot.printPreview.printFile, png_base64: snapshot.printPreview.png.toString('base64') };

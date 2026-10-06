@@ -1,7 +1,7 @@
 import mqtt from 'mqtt';
 import { Client as FTPClient, FileInfo } from 'basic-ftp';
 import { Writable } from 'stream';
-import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, JobResult, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
+import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAlert, JobResult, JobState, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
 import { extractPlatePreview, parseFileBuffer } from './bambu-file-parser.js';
 import { ftpsDownload, ftpsList } from './ftps.js';
 import { addEvent } from '../events.js';
@@ -62,6 +62,14 @@ interface BambuPrint {
   gcode_file?: string; // absoluter Pfad auf dem Drucker, z.B. "/data/Metadata/plate_1.gcode"
   file?: string;       // alternatives Feld, gleiches Format
   hms?: BambuHms[];
+  print_error?: number;
+  sequence_id?: string;
+  result?: string;   // command replies: "success" / "fail"
+  reason?: string;
+  // Per-extruder state (all current firmware; dual-nozzle printers report two). `snow` is
+  // the tray loaded on that extruder as (ams_id << 8) | slot, 65535 = none; the active
+  // extruder is bits 4–7 of `state`.
+  device?: { extruder?: { state?: number; info?: Array<{ id?: number; snow?: number }> } };
   ams?: {
     ams?: BambuAmsUnit[];
     tray_now?: number | string; // aktiver Slot (globaler Index: ams_unit*4 + slot); Bambu sendet manchmal string
@@ -87,6 +95,10 @@ const num = (v?: string | number | null) => {
 function mapState(state: string): PrinterStatus {
   switch (state.toUpperCase()) {
     case 'RUNNING': return 'printing';
+    // Heating, levelling and calibration before the first layer: the printer is busy, and
+    // a job that fails here must still end as a (failed) job, not vanish.
+    case 'PREPARE':
+    case 'SLICING': return 'printing';
     case 'PAUSE':   return 'paused';
     case 'FAILED':  return 'error';
     case 'IDLE':
@@ -104,6 +116,60 @@ function mapJobResult(state: string): JobResult | null {
     case 'FAILED': return 'failed';
     default:       return null;
   }
+}
+
+/** The printer refused or ignored a control command (typically: no Developer Mode). */
+export class CommandRejectedError extends Error {
+  readonly code = 'command_rejected';
+}
+
+export function mapJobState(state: string): JobState {
+  switch (state.toUpperCase()) {
+    case 'PREPARE':
+    case 'SLICING': return 'preparing';
+    case 'RUNNING': return 'printing';
+    case 'PAUSE':   return 'paused';
+    case 'FINISH':  return 'finished';
+    case 'FAILED':  return 'failed';
+    default:        return 'idle';
+  }
+}
+
+const HMS_SEVERITY: Record<number, HmsAlert['severity']> = { 1: 'fatal', 2: 'serious', 3: 'common', 4: 'info' };
+const hex4 = (n: number) => (n & 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
+
+/** HMS entries → "XXXX_XXXX_XXXX_XXXX" codes as shown on the printer. */
+export function parseHms(hms: BambuHms[]): HmsAlert[] {
+  return hms.map(h => ({
+    code: `${hex4(h.attr >>> 16)}_${hex4(h.attr)}_${hex4(h.code >>> 16)}_${hex4(h.code)}`,
+    severity: HMS_SEVERITY[(h.code >>> 16) & 0xFFFF] ?? 'unknown',
+  }));
+}
+
+/** print_error → "MMMM_EEEE"; values below 0x4000 in the low word are status, not errors. */
+export function formatPrintError(err: number | undefined): string | null {
+  if (!err || (err & 0xFFFF) < 0x4000) return null;
+  return `${hex4(err >>> 16)}_${hex4(err)}`;
+}
+
+/**
+ * Active tray from the extruder state, in the global encoding Flownt uses (unit*4+slot,
+ * 128+ = AMS HT, 254 = external spool, 255 = none). Needed for dual-nozzle printers
+ * (H2D/H2C/X2D), where tray_now only holds the slot within the unit; on single-nozzle
+ * printers it gives the same value as tray_now.
+ */
+export function activeTrayFromExtruder(dev: BambuPrint['device']): number | undefined {
+  const info = dev?.extruder?.info;
+  if (!Array.isArray(info) || info.length === 0 || typeof dev?.extruder?.state !== 'number') return undefined;
+  const active = (dev.extruder.state >> 4) & 0xF;
+  const ext = info.find(e => e.id === active);
+  if (typeof ext?.snow !== 'number') return undefined;
+  if (ext.snow === 65535) return 255;
+  const unit = ext.snow >> 8;
+  const slot = ext.snow & 0xFF;
+  if (unit === 254 || unit === 255) return 254;
+  if (unit >= 128) return unit;
+  return unit * 4 + slot;
 }
 
 function normalizeColor(raw?: string): string {
@@ -218,6 +284,7 @@ export class BambuAdapter implements Adapter {
   private accessCode: string;
   private printerId: string;
   private connected = false;
+  private pendingCommands = new Map<string, (result?: string, reason?: string) => void>();
   private snapshot: PrinterSnapshot = { status: 'offline' };
   private client: mqtt.MqttClient | null = null;
   private reconnectDelayMs = RECONNECT_MIN_MS;
@@ -346,6 +413,13 @@ export class BambuAdapter implements Adapter {
         // push_status = periodic full-state push (gcode_state may be "" when printer is idle)
         const isPushStatus = p.command === 'push_status';
 
+        // Reply to a command we sent (matched by sequence_id).
+        const pending = p.sequence_id ? this.pendingCommands.get(p.sequence_id) : undefined;
+        if (pending && !isPushStatus) {
+          this.pendingCommands.delete(p.sequence_id!);
+          pending(p.result, p.reason);
+        }
+
         if (!isPushStatus) {
           // All command responses — log regardless of whether gcode_state is present
           console.log('[bambu] Printer response:', raw.slice(0, 800));
@@ -398,7 +472,10 @@ export class BambuAdapter implements Adapter {
           // Sticky: Bambu sendet Teil-Updates — tray_now fehlt in den meisten Deltas.
           // Ohne Carry-forward fiele der aktive Slot (auch 254 = externe Spule) in der
           // Anzeige ständig auf „unbekannt" zurück.
-          activeMqttSlot: trayNow ?? this.snapshot.activeMqttSlot,
+          activeMqttSlot: activeTrayFromExtruder(p.device) ?? trayNow ?? this.snapshot.activeMqttSlot,
+          jobState: mapJobState(gcodeState),
+          hms: Array.isArray(p.hms) ? parseHms(p.hms) : this.snapshot.hms,
+          printError: typeof p.print_error === 'number' ? formatPrintError(p.print_error) : this.snapshot.printError,
           amsHumidity: amsHumidity.length > 0 ? amsHumidity : this.snapshot.amsHumidity,
           amsUnits: amsUnits.length > 0 ? amsUnits : this.snapshot.amsUnits,
           // Mapping ist JOB-Zustand: bei neuem Druck verwerfen (wie parsedFilamentWeights).
@@ -480,7 +557,7 @@ export class BambuAdapter implements Adapter {
         // Own FTPS client: resumes the TLS session on the data connection, which newer
         // Bambu firmware requires (basic-ftp gets "522 session reuse required").
         const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
-        const weights: FilamentWeight[] = parseFileBuffer(filename, buf);
+        const weights: FilamentWeight[] = parseFileBuffer(filename, buf, this.plateIndex);
         this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, buf) };
         console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
         addEvent(this.printerId, 'success', `Druckdatei geladen: ${filename} (${weights.length} Slot(s))`);
@@ -507,7 +584,7 @@ export class BambuAdapter implements Adapter {
       try {
         const remotePath = joinPath(dir, hit);
         const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
-        const weights: FilamentWeight[] = parseFileBuffer(hit, buf);
+        const weights: FilamentWeight[] = parseFileBuffer(hit, buf, this.plateIndex);
         this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, buf) };
         console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
         addEvent(this.printerId, 'success', `Druckdatei geladen: ${hit} (${weights.length} Slot(s))`);
@@ -524,7 +601,7 @@ export class BambuAdapter implements Adapter {
     console.log(`[bambu] FTPS: "${name}" an festen Pfaden nicht gefunden – durchsuche SD-Karte rekursiv…`);
     const hit = await this.searchSdForFile(name);
     if (hit) {
-      const weights: FilamentWeight[] = parseFileBuffer(hit.path, hit.buf);
+      const weights: FilamentWeight[] = parseFileBuffer(hit.path, hit.buf, this.plateIndex);
       this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, hit.buf) };
       console.log(`[bambu] Druckdatei via SD-Suche geladen: ${hit.path} → ${weights.length} Filament(e) geparst`);
       addEvent(this.printerId, 'success', `Druckdatei geladen (SD-Suche): ${hit.path.split('/').pop()} (${weights.length} Slot(s))`);
@@ -620,6 +697,13 @@ export class BambuAdapter implements Adapter {
         payload = { print: { command: 'stop', sequence_id: seqId } };
         break;
     }
+    // Wait for the printer's reply. Current Bambu firmware only executes control
+    // commands over LAN in Developer Mode; otherwise it rejects them or does not answer —
+    // report that instead of claiming success.
+    const reply = new Promise<{ result?: string; reason?: string } | null>(resolve => {
+      const timer = setTimeout(() => { this.pendingCommands.delete(seqId); resolve(null); }, 8_000);
+      this.pendingCommands.set(seqId, (result, reason) => { clearTimeout(timer); resolve({ result, reason }); });
+    });
     await new Promise<void>((resolve, reject) => {
       this.client!.publish(
         `device/${this.serial}/request`,
@@ -628,6 +712,14 @@ export class BambuAdapter implements Adapter {
         (err) => (err ? reject(err) : resolve()),
       );
     });
-    console.log(`[bambu] Command sent: ${cmd.type}`);
+    const r = await reply;
+    const verificationFailed = (this.snapshot.hms ?? []).some(h => h.code === '0500_0500_0001_0007');
+    if (!r || verificationFailed || (r.result && r.result.toLowerCase() !== 'success')) {
+      const why = verificationFailed ? 'command verification failed (HMS 0500_0500_0001_0007)'
+        : r ? `${r.result}${r.reason ? `: ${r.reason}` : ''}` : 'no reply';
+      console.warn(`[bambu] Command ${cmd.type} rejected: ${why}`);
+      throw new CommandRejectedError(why);
+    }
+    console.log(`[bambu] Command executed: ${cmd.type}`);
   }
 }
