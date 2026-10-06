@@ -68,7 +68,7 @@ test('connection drop mid-print is not a new job', async () => {
   ], { dir, backend: be, clock });
   const done = be.delivered('job_complete');
   assert.equal(done.length, 1);
-  assert.equal(done[0].duration_min, Math.round((clock.t - 30_000 - t0) / 60_000));
+  assert.equal(done[0].duration_min, Math.round((clock.t - t0) / 60_000));
   assert.deepEqual(done[0].filament_weights?.map(l => l.filamentIndex), [0]);
 });
 

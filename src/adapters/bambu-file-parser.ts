@@ -51,6 +51,31 @@ export function extractPlatePreview(buffer: Buffer, plate?: number): Buffer | nu
   return key ? Buffer.from(files[key]) : null;
 }
 
+/** The printed plate's part of slice_info.config (all of it for single-plate files). */
+function plateXml(xml: string, plate?: number): string {
+  const plates = [...xml.matchAll(/<plate>([\s\S]*?)<\/plate>/g)].map(m => m[1]);
+  if (plates.length > 1) {
+    const printed = plates.find(pl => new RegExp(`key="index"\\s+value="${plate ?? 1}"`).test(pl));
+    if (printed) return printed;
+  }
+  return xml;
+}
+
+/** Slicer-predicted print time of the printed plate in seconds (.3mf slice_info), or null. */
+export function parseSlicePrediction(buffer: Buffer, plate?: number): number | null {
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(new Uint8Array(buffer), { filter: f => f.name === 'Metadata/slice_info.config' });
+  } catch {
+    return null;
+  }
+  const raw = files['Metadata/slice_info.config'];
+  if (!raw) return null;
+  const m = /key="prediction"\s+value="(\d+(?:\.\d+)?)"/.exec(plateXml(dec.decode(raw), plate));
+  const s = m ? parseFloat(m[1]) : NaN;
+  return Number.isFinite(s) && s > 0 ? s : null;
+}
+
 function parse3mf(buffer: Buffer, plate?: number): FilamentWeight[] {
   let files: Record<string, Uint8Array>;
   try {
@@ -62,14 +87,9 @@ function parse3mf(buffer: Buffer, plate?: number): FilamentWeight[] {
   // Bambu Studio: Metadata/slice_info.config (XML mit used_g pro filament id)
   const bambuRaw = files['Metadata/slice_info.config'];
   if (bambuRaw) {
-    let xml = dec.decode(bambuRaw);
     // Files sent from Bambu Studio contain only the printed plate. A project with several
     // sliced plates lists each plate's filaments separately: count only the printed one.
-    const plates = [...xml.matchAll(/<plate>([\s\S]*?)<\/plate>/g)].map(m => m[1]);
-    if (plates.length > 1) {
-      const printed = plates.find(pl => new RegExp(`key="index"\\s+value="${plate ?? 1}"`).test(pl));
-      if (printed) xml = printed;
-    }
+    const xml = plateXml(dec.decode(bambuRaw), plate);
     const weights: FilamentWeight[] = [];
     for (const m of xml.matchAll(/<filament\b([^>]*)>/gi)) {
       const attrs = m[1];

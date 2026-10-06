@@ -2,7 +2,7 @@ import mqtt from 'mqtt';
 import { Client as FTPClient, FileInfo } from 'basic-ftp';
 import { Writable } from 'stream';
 import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAlert, JobResult, JobState, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
-import { extractPlatePreview, parseFileBuffer } from './bambu-file-parser.js';
+import { extractPlatePreview, parseFileBuffer, parseSlicePrediction } from './bambu-file-parser.js';
 import { ftpsDownload, ftpsList } from './ftps.js';
 import { addEvent } from '../events.js';
 import { isActiveGcodeState, isNewJob, isTelemetry, jobIdentity, mergePrintState, PrintState, toInt } from './bambu-state.js';
@@ -120,6 +120,20 @@ function mapJobResult(state: string): JobResult | null {
     case 'FAILED': return 'failed';
     default:       return null;
   }
+}
+
+/** print_error low word of a job stopped by the user (printer screen, app or LAN stop). */
+const PRINT_ERROR_USER_CANCEL = 0x8001;
+
+/**
+ * Job result including cancels: the firmware reports a stop as FAILED; it is a cancel
+ * when print_error says "stopped by user" or when the bridge itself sent the stop.
+ */
+export function bambuJobResult(gcodeState: string, printError: number | undefined, stopRequested: boolean): JobResult | null {
+  const r = mapJobResult(gcodeState);
+  if (r !== 'failed') return r;
+  if (stopRequested || (typeof printError === 'number' && (printError & 0xFFFF) === PRINT_ERROR_USER_CANCEL)) return 'aborted';
+  return r;
 }
 
 /** The printer refused or ignored a control command (typically: no Developer Mode). */
@@ -606,7 +620,7 @@ export class BambuAdapter implements Adapter {
       status,
       stale: this.stale,
       jobKey: this.jobKey,
-      jobResult: gcodeState !== undefined ? mapJobResult(gcodeState) : prev.jobResult,
+      jobResult: gcodeState !== undefined ? bambuJobResult(gcodeState, st.print_error, this.stopRequested) : prev.jobResult,
       printFile: st.subtask_name || undefined,
       sourceJobId: jobIdentity(st).sourceJobId,
       layerNum,
@@ -627,7 +641,21 @@ export class BambuAdapter implements Adapter {
       filamentMapping: Array.isArray(st.mapping) && st.mapping.length > 0 ? st.mapping : undefined,
       parsedFilamentWeights: isNewPrint ? null : prev.parsedFilamentWeights,
       printPreview: isNewPrint ? null : prev.printPreview,
+      estimatedDurationMin: isNewPrint ? null : prev.estimatedDurationMin,
     };
+  }
+
+  /** Slicer weights, plate preview and predicted time of the job's print file. */
+  private applyPrintFile(jobName: string, filename: string, buf: Buffer): FilamentWeight[] {
+    const weights = parseFileBuffer(filename, buf, this.plateIndex);
+    const predictionS = parseSlicePrediction(buf, this.plateIndex);
+    this.snapshot = {
+      ...this.snapshot,
+      parsedFilamentWeights: weights,
+      printPreview: this.preview(jobName, buf),
+      estimatedDurationMin: predictionS != null ? Math.round(predictionS / 60) : this.snapshot.estimatedDurationMin,
+    };
+    return weights;
   }
 
   /** Plate thumbnail of the job's .3mf, tied to the print file it belongs to. */
@@ -662,8 +690,7 @@ export class BambuAdapter implements Adapter {
         // Own FTPS client: resumes the TLS session on the data connection, which newer
         // Bambu firmware requires (basic-ftp gets "522 session reuse required").
         const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
-        const weights: FilamentWeight[] = parseFileBuffer(filename, buf, this.plateIndex);
-        this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, buf) };
+        const weights = this.applyPrintFile(name, filename, buf);
         console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
         addEvent(this.printerId, 'success', `Druckdatei geladen: ${filename} (${weights.length} Slot(s))`);
         return;
@@ -689,8 +716,7 @@ export class BambuAdapter implements Adapter {
       try {
         const remotePath = joinPath(dir, hit);
         const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
-        const weights: FilamentWeight[] = parseFileBuffer(hit, buf, this.plateIndex);
-        this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, buf) };
+        const weights = this.applyPrintFile(name, hit, buf);
         console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
         addEvent(this.printerId, 'success', `Druckdatei geladen: ${hit} (${weights.length} Slot(s))`);
         return;
@@ -706,8 +732,7 @@ export class BambuAdapter implements Adapter {
     console.log(`[bambu] FTPS: "${name}" an festen Pfaden nicht gefunden – durchsuche SD-Karte rekursiv…`);
     const hit = await this.searchSdForFile(name);
     if (hit) {
-      const weights: FilamentWeight[] = parseFileBuffer(hit.path, hit.buf, this.plateIndex);
-      this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, hit.buf) };
+      const weights = this.applyPrintFile(name, hit.path, hit.buf);
       console.log(`[bambu] Druckdatei via SD-Suche geladen: ${hit.path} → ${weights.length} Filament(e) geparst`);
       addEvent(this.printerId, 'success', `Druckdatei geladen (SD-Suche): ${hit.path.split('/').pop()} (${weights.length} Slot(s))`);
       return;

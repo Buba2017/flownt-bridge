@@ -171,7 +171,14 @@ export class JobTracker {
     }
     if (snap.filamentMapping?.length) s.filamentMapping = snap.filamentMapping;
     if (snap.parsedFilamentWeights?.length) s.parsedFilamentWeights = snap.parsedFilamentWeights;
-    if (snap.estimatedDurationMin != null) s.estimatedDurationMin = snap.estimatedDurationMin;
+    if (snap.estimatedDurationMin != null) {
+      s.estimatedDurationMin = snap.estimatedDurationMin;
+    } else if (s.estimatedDurationMin == null && snap.jobState === 'printing' && snap.etaSec != null
+        && snap.progressPct != null && snap.progressPct <= 1) {
+      // No slicer prediction (file not readable): the printer's remaining time right
+      // after the start is the best estimate of the whole job.
+      s.estimatedDurationMin = Math.round(snap.etaSec / 60);
+    }
     if (snap.amsSlots?.length && isActive(snap)) s.amsSlots = snap.amsSlots;
     if (isTrackedSlot(snap.activeMqttSlot)) s.lastActiveSlot = snap.activeMqttSlot!;
     if (snap.printError !== undefined && snap.printError !== null) s.printError = snap.printError;

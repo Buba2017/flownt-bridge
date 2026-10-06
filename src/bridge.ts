@@ -7,8 +7,8 @@ import { BambuCloudClient } from './bambu-cloud.js';
 import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
 import { defaultSender, getOutbox, Outbox, Sender } from './outbox.js';
-import { JobEnd, JobSessionStore, JobTracker } from './job-session.js';
-import { isTrackedSlot, resolveMaterials, slotLabel } from './job-materials.js';
+import { JobEnd, JobSession, JobSessionStore, JobTracker } from './job-session.js';
+import { isTrackedSlot, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
 
 // Last preview delivered per printer config (object identity = one fetch of one job).
 const sentPreviews = new Map<string, PrinterSnapshot['printPreview']>();
@@ -60,6 +60,25 @@ async function pushStatus(cfg: PrinterConfig, snapshot: PrinterSnapshot, send: S
   if (body.print_preview && snapshot.printPreview) sentPreviews.set(cfg.id, snapshot.printPreview);
 }
 
+const HMS_RANK: Record<string, number> = { fatal: 0, serious: 1, common: 2, info: 3, unknown: 4 };
+
+/** Why a job failed: the printer's error code, else the most severe active HMS code. */
+export function failureReason(s: Pick<JobSession, 'printError' | 'hms'>): string | null {
+  if (s.printError) return s.printError;
+  const worst = [...s.hms].sort((a, b) => (HMS_RANK[a.severity] ?? 9) - (HMS_RANK[b.severity] ?? 9))[0];
+  return worst?.code ?? null;
+}
+
+/**
+ * Share of the job printed before it ended (0–1): by layers when the printer reported
+ * them for this job, else by progress; null when unknown.
+ */
+export function printedFraction(s: Pick<JobSession, 'lastLayer' | 'totalLayers' | 'lastProgressPct'>): number | null {
+  if (s.lastLayer != null && s.totalLayers) return Math.min(1, Math.max(0, s.lastLayer / s.totalLayers));
+  if (s.lastProgressPct != null) return Math.min(1, Math.max(0, s.lastProgressPct / 100));
+  return null;
+}
+
 /** Terminal event body for a finished/failed job, built from its session. */
 async function buildTerminalBody(
   cfg: PrinterConfig, snapshot: PrinterSnapshot, end: JobEnd,
@@ -82,11 +101,26 @@ async function buildTerminalBody(
     }
   }
 
+  body.started_at = new Date(s.startedAt).toISOString();
+  body.finished_at = new Date(end.finishedAt).toISOString();
+  if (s.estimatedDurationMin != null) body.estimated_duration_min = s.estimatedDurationMin;
+  body.outcome = end.outcome;
+  if (s.lastProgressPct != null) body.last_progress_pct = s.lastProgressPct;
+  if (eventType === 'job_failed') body.failure_reason = failureReason(s);
+
+  // AMS state as seen during the job (the live one may already belong to the next job).
+  const jobSlots = s.amsSlots.length ? s.amsSlots : snapshot.amsSlots ?? [];
+  const resolved = resolveMaterials(s.parsedFilamentWeights, {
+    mapping: s.filamentMapping, activeSlot: s.lastActiveSlot, amsSlots: jobSlots,
+  });
+  for (const n of resolved.notes) addEvent(cfg.id, n.type, n.msg);
+  // tray_uuid of the slot each line was printed from, as seen during the job.
+  const trayUuid = (index: number): string | null => {
+    if (resolved.slotSource !== 'ams') return null;
+    const slot = jobSlots.find(a => slotIndex(a.ams_unit, a.slot) === index);
+    return slot?.tray_uuid ?? null;
+  };
   if (eventType === 'job_complete') {
-    const resolved = resolveMaterials(s.parsedFilamentWeights, {
-      mapping: s.filamentMapping, activeSlot: s.lastActiveSlot, amsSlots: snapshot.amsSlots?.length ? snapshot.amsSlots : s.amsSlots,
-    });
-    for (const n of resolved.notes) addEvent(cfg.id, n.type, n.msg);
     if (resolved.weights.length) {
       // Per material line the source-abstracted slot reference; filamentIndex stays as the
       // compat field the backend reads.
@@ -96,12 +130,28 @@ async function buildTerminalBody(
         color: fw.color,
         slotRef: { source: resolved.slotSource, value: fw.filamentIndex },
         measureSource: 'slicer_file',
+        estimated_grams: fw.grams,
+        tray_uuid: trayUuid(fw.filamentIndex),
       }));
     }
     // Bambu cloud weight only when the print file gave nothing (its login mails a code).
     if (!resolved.weights.length && bambuCloud && cfg.adapterSerial) {
       const cloudWeight = await bambuCloud.getLatestTaskWeightWithRetry(cfg.adapterSerial);
       if (cloudWeight != null) body.cloud_weight_g = cloudWeight;
+    }
+  } else {
+    // Failed / cancelled: the part printed so far, estimated from the slicer weights.
+    const fraction = printedFraction(s);
+    if (resolved.weights.length && fraction != null) {
+      body.filament_weights = resolved.weights.map((fw): MaterialLine => ({
+        filamentIndex: fw.filamentIndex,
+        grams: Math.round(fw.grams * fraction * 100) / 100,
+        color: fw.color,
+        slotRef: { source: resolved.slotSource, value: fw.filamentIndex },
+        measureSource: 'estimated_partial',
+        estimated_grams: fw.grams,
+        tray_uuid: trayUuid(fw.filamentIndex),
+      }));
     }
   }
   return body;
