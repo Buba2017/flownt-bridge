@@ -1,9 +1,7 @@
 import mqtt from 'mqtt';
-import { Client as FTPClient, FileInfo } from 'basic-ftp';
-import { Writable } from 'stream';
 import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAlert, JobResult, JobState, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
 import { extractPlatePreview, parseFileBuffer, parseSlicePrediction } from './bambu-file-parser.js';
-import { ftpsDownload, ftpsList } from './ftps.js';
+import { DirEntry, FtpsError, FtpsOptions, FtpsSession, withFtps } from './ftps.js';
 import { addEvent } from '../events.js';
 import { isActiveGcodeState, isNewJob, isTelemetry, jobIdentity, mergePrintState, PrintState, toInt } from './bambu-state.js';
 
@@ -76,6 +74,7 @@ interface BambuPrint {
     ams?: BambuAmsUnit[];
     tray_now?: number | string; // aktiver Slot (globaler Index: ams_unit*4 + slot); Bambu sendet manchmal string
   };
+  url?: string;              // project_file echo: where the job's file is (file:///userdata/… = internal)
   task_id?: string;          // per-job id of LAN jobs (subtask_id is "" and job_id "0" there)
   gcode_start_time?: string | number; // job start, epoch s (not sent by all firmware)
   layer_num?: number;
@@ -264,12 +263,6 @@ function parseAmsHumidity(ams?: BambuPrint['ams']): AmsHumidityUnit[] {
 }
 
 
-class BufferWritable extends Writable {
-  private chunks: Buffer[] = [];
-  _write(chunk: Buffer, _enc: string, cb: () => void) { this.chunks.push(chunk); cb(); }
-  getBuffer(): Buffer { return Buffer.concat(this.chunks); }
-}
-
 // Leerzeichen und Unterstriche gleichsetzen: Bambu Studio bereinigt beim Senden
 // "Modell v3" → "Modell_v3" (liegt in /cache/), ein SD-Start meldet aber den
 // Originalnamen mit Leerzeichen. So matchen beide Schreibweisen.
@@ -279,6 +272,32 @@ function normalizeName(s: string): string {
 
 function joinPath(dir: string, name: string): string {
   return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
+}
+
+type FetchResult = 'ok' | 'missing' | 'error';
+const FETCH_MAX_ATTEMPTS = 3;
+const FETCH_RETRY_MS = 2 * 60_000;
+
+const isMissing = (e: unknown) => e instanceof FtpsError && e.code === 550;
+
+/**
+ * Searches the SD card for the print file (depth and noise folders limited, so large
+ * cards stay cheap). Uses our own client's LIST: basic-ftp gets 522 on X1C/X2D/H2C.
+ */
+async function walkSd(s: FtpsSession, dir: string, matches: (name: string) => boolean, depth: number): Promise<string | null> {
+  const MAX_DEPTH = 3;
+  const SKIP_DIRS = new Set(['timelapse', 'ipcam', 'logger', 'log', 'cache', 'model']);
+  let entries: DirEntry[];
+  try { entries = await s.list(dir); } catch (e) { if (isMissing(e)) return null; throw e; }
+  const file = entries.find(e => !e.isDir && matches(e.name));
+  if (file) return joinPath(dir, file.name);
+  if (depth >= MAX_DEPTH) return null;
+  for (const e of entries) {
+    if (!e.isDir || e.name.startsWith('.') || SKIP_DIRS.has(e.name.toLowerCase())) continue;
+    const found = await walkSd(s, joinPath(dir, e.name), matches, depth + 1);
+    if (found) return found;
+  }
+  return null;
 }
 
 // Connection timing. The requested values: reconnect backoff 5 s → 60 s; a connected
@@ -307,6 +326,10 @@ export interface BambuAdapterOptions {
   brokerUrl?: string;
   /** false = never fetch print files over FTPS. */
   fetchFiles?: boolean;
+  /** FTPS port / timeouts (fake server in tests). */
+  ftps?: FtpsOptions;
+  /** Wait before fetching the print file again after a failed attempt. */
+  fetchRetryMs?: number;
   timings?: Partial<BambuTimings>;
 }
 
@@ -344,9 +367,12 @@ export class BambuAdapter implements Adapter {
   private jobKey: string | null = null;
   private lastGcodeState: string | undefined;
   private stopRequested = false; // we sent "stop" for the current job
-  // Job whose print file was already fetched (weights + preview); also covers jobs that
-  // were running when the bridge started, not only new ones.
-  private fetchedJobKey: string | null = null;
+  // Print file fetch of the current job (weights + preview); also covers jobs that were
+  // running when the bridge started, not only new ones.
+  private fetchState: { key: string; attempts: number; nextAt: number; done: boolean } | null = null;
+  private fetching = false;
+  // Last print start echoed by the printer (command project_file): tells where the file is.
+  private lastProjectFile: { url: string; subtaskName: string } | null = null;
   private plateIndex: number | undefined; // from gcode_file ".../plate_<n>.gcode"
   private lastHumSig = ''; // fuer ein Log nur bei Aenderung der AMS-Feuchte
   private disposed = false;
@@ -548,6 +574,9 @@ export class BambuAdapter implements Adapter {
       // Command replies and commands of other clients echoed by the printer: they carry
       // command fields (gcode_state of the command, param, …), not printer state.
       console.log('[bambu] Printer response:', raw.slice(0, 800));
+      if (p.command === 'project_file' && typeof p.url === 'string') {
+        this.lastProjectFile = { url: p.url, subtaskName: typeof p.subtask_name === 'string' ? p.subtask_name : '' };
+      }
       return;
     }
     if (typeof p.ipcam?.rtsp_url === 'string') this.cameraRtspUrl = p.ipcam.rtsp_url;
@@ -580,7 +609,6 @@ export class BambuAdapter implements Adapter {
       // Mapping is job state: a print without its own mapping (external spool!) must not
       // inherit the previous print's mapping, or its usage is booked to that AMS slot.
       if (!Array.isArray(p.mapping)) delete this.state.mapping;
-      this.fetchedJobKey = null;
       this.stopRequested = false;
       this.requestPushall(); // full state at print start (mapping, AMS)
     }
@@ -596,12 +624,8 @@ export class BambuAdapter implements Adapter {
 
     // Bei Druckstart (oder laufendem Druck nach Bridge-Start): Druckdatei via FTPS
     // laden und parsen — einmal je Job.
-    const jobKey = this.snapshot.printFile ? this.jobKey : null;
-    if (jobKey && (newStatus === 'printing' || newStatus === 'paused') && jobKey !== this.fetchedJobKey && this.opts.fetchFiles !== false) {
-      this.fetchedJobKey = jobKey;
-      this.fetchPrintFile(this.snapshot.printFile).catch(err =>
-        console.error('[bambu] fetchPrintFile:', err),
-      );
+    if (this.jobKey && this.snapshot.printFile && (newStatus === 'printing' || newStatus === 'paused')) {
+      this.maybeFetchPrintFile(this.jobKey, this.snapshot.printFile);
     }
   }
 
@@ -661,149 +685,95 @@ export class BambuAdapter implements Adapter {
     return weights;
   }
 
+  /**
+   * Fetches the job's print file (weights + preview) once per job. A failed attempt
+   * (timeout, connection reset) is retried later; a file that is not on the SD card is
+   * not looked for again for this job.
+   */
+  private maybeFetchPrintFile(jobKey: string, printFile: string): void {
+    if (this.fetching || this.opts.fetchFiles === false) return;
+    const f = this.fetchState;
+    if (f && f.key === jobKey && (f.done || Date.now() < f.nextAt)) return;
+    const state = f && f.key === jobKey ? f : { key: jobKey, attempts: 0, nextAt: 0, done: false };
+    this.fetchState = state;
+    if (this.isInternalStorageJob(printFile)) {
+      state.done = true;
+      console.log(`[bambu] "${printFile}" is stored in the printer's internal storage — not reachable over FTPS, no slicer weights/preview`);
+      addEvent(this.printerId, 'info', `Druckdatei liegt im internen Speicher des Druckers — keine Slicer-Gewichte/Vorschau (${printFile})`);
+      return;
+    }
+    state.attempts++;
+    this.fetching = true;
+    this.fetchPrintFile(printFile)
+      .catch((err): FetchResult => { console.error('[bambu] fetchPrintFile:', err); return 'error'; })
+      .then(result => {
+        if (result !== 'error' || state.attempts >= FETCH_MAX_ATTEMPTS) {
+          state.done = true;
+          if (result === 'error') addEvent(this.printerId, 'warn', `Druckdatei nach ${state.attempts} Versuchen nicht geladen: ${printFile}`);
+        } else {
+          state.nextAt = Date.now() + (this.opts.fetchRetryMs ?? FETCH_RETRY_MS) * state.attempts;
+        }
+      })
+      .finally(() => { this.fetching = false; });
+  }
+
+  /** The printer echoed the print start with a file in its internal storage (X2D/H2C). */
+  private isInternalStorageJob(printFile: string): boolean {
+    const pf = this.lastProjectFile;
+    return !!pf && pf.subtaskName === printFile && /^file:\/\/\/(userdata|data)\//i.test(pf.url);
+  }
+
   /** Plate thumbnail of the job's .3mf, tied to the print file it belongs to. */
   private preview(printFile: string, buf: Buffer): PrinterSnapshot['printPreview'] {
     const png = extractPlatePreview(buf, this.plateIndex);
     return png ? { printFile, png } : null;
   }
 
-  private async fetchPrintFile(subtaskName?: string): Promise<void> {
-    if (!subtaskName) return;
-    // FTPS-Root ist die SD-Karte. Dateien liegen als "{name}.gcode.3mf" (Bambu Studio)
-    // HA sucht: /cache/ zuerst, dann Root /
-    const name = subtaskName;
-    // Bambu Studio bereinigt beim Senden Leerzeichen → Unterstriche und legt die
-    // Datei so in /cache/ ab; MQTT meldet aber oft den Originalnamen mit Leerzeichen
-    // (z. B. bei SD-Start). Darum beide Schreibweisen als feste Kandidaten probieren,
-    // bevor die teure rekursive SD-Suche greift.
-    // A "/" in the job name is stored as "2f" (URL encoding without "%").
+  private async fetchPrintFile(name: string): Promise<FetchResult> {
+    // FTPS root is the SD card. Files sent from Bambu Studio are "{name}.gcode.3mf" in
+    // /cache/; Bambu Studio replaces spaces with underscores, while MQTT often reports the
+    // original name (e.g. SD start), and a "/" in the job name is stored as "2f" (URL
+    // encoding without "%"). So: fixed candidates first, then the folder listings, then a
+    // bounded walk of the card — all in one FTPS session.
     const safe = name.replace(/\//g, '2f');
-    const underscored = safe.replace(/ /g, '_');
-    const nameVariants = [...new Set([safe, underscored])];
-    const candidates: string[] = nameVariants.flatMap((n) => [
-      `/cache/${n}.gcode.3mf`,
-      `/cache/${n}.3mf`,
-      `/${n}.gcode.3mf`,
-      `/${n}.3mf`,
-    ]);
-    const filename = `${name}.gcode.3mf`;
-    console.log(`[bambu] FTPS: Lade Druckdatei "${name}", versuche ${candidates.length} Pfad(e)…`);
-    for (const remotePath of candidates) {
-      try {
-        // Own FTPS client: resumes the TLS session on the data connection, which newer
-        // Bambu firmware requires (basic-ftp gets "522 session reuse required").
-        const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
-        const weights = this.applyPrintFile(name, filename, buf);
-        console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
-        addEvent(this.printerId, 'success', `Druckdatei geladen: ${filename} (${weights.length} Slot(s))`);
-        return;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.startsWith('550')) {
-          console.log(`[bambu] FTPS 550 – nicht gefunden: ${remotePath}`);
-        } else {
-          console.warn(`[bambu] FTPS-Fehler (${remotePath}): ${msg}`);
-          addEvent(this.printerId, 'warn', `FTPS-Fehler: ${msg.slice(0, 80)}`);
-          return; // Verbindungsfehler → kein weiterer Versuch
+    const nameVariants = [...new Set([safe, safe.replace(/ /g, '_')])];
+    const candidates = nameVariants.flatMap(n => [`/cache/${n}.gcode.3mf`, `/cache/${n}.3mf`, `/${n}.gcode.3mf`, `/${n}.3mf`]);
+    const target = normalizeName(safe);
+    const matches = (file: string) => /\.3mf$/i.test(file)
+      && normalizeName(file.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '')) === target;
+    console.log(`[bambu] FTPS: Lade Druckdatei "${name}"…`);
+    let hit: { path: string; buf: Buffer } | null;
+    try {
+      hit = await withFtps(this.ip, this.accessCode, async s => {
+        for (const path of candidates) {
+          try { return { path, buf: await s.retr(path) }; } catch (e) { if (!isMissing(e)) throw e; }
         }
-      }
-    }
-    // Then the file lists of the usual folders (names may differ in spaces/underscores).
-    for (const dir of ['/cache', '/', '/model']) {
-      let names: string[];
-      try { names = await ftpsList(this.ip, this.accessCode, dir); } catch { continue; }
-      const target = normalizeName(safe);
-      const hit = names.map(n => n.split('/').pop() ?? n)
-        .find(n => /\.3mf$/i.test(n) && normalizeName(n.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '')) === target);
-      if (!hit) continue;
-      try {
-        const remotePath = joinPath(dir, hit);
-        const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
-        const weights = this.applyPrintFile(name, hit, buf);
-        console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
-        addEvent(this.printerId, 'success', `Druckdatei geladen: ${hit} (${weights.length} Slot(s))`);
-        return;
-      } catch (err: unknown) {
-        console.warn(`[bambu] FTPS-Fehler (${dir}/${hit}): ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    // Fallback: an keinem festen Pfad gefunden → SD-Karte rekursiv durchsuchen.
-    // Greift v. a. bei Drucken, die direkt am Drucker von der SD gestartet wurden
-    // (MQTT meldet dann den Originalnamen mit Leerzeichen, Datei liegt in einem
-    // eigenen Ordner statt in /cache/; gcode_file zeigt auf /data/… = interner
-    // Speicher, per FTPS nicht erreichbar → wir müssen die SD selbst absuchen).
-    console.log(`[bambu] FTPS: "${name}" an festen Pfaden nicht gefunden – durchsuche SD-Karte rekursiv…`);
-    const hit = await this.searchSdForFile(name);
-    if (hit) {
-      const weights = this.applyPrintFile(name, hit.path, hit.buf);
-      console.log(`[bambu] Druckdatei via SD-Suche geladen: ${hit.path} → ${weights.length} Filament(e) geparst`);
-      addEvent(this.printerId, 'success', `Druckdatei geladen (SD-Suche): ${hit.path.split('/').pop()} (${weights.length} Slot(s))`);
-      return;
-    }
-
-    console.warn(`[bambu] Druckdatei nicht via FTPS abrufbar: ${filename}`);
-    addEvent(this.printerId, 'warn', `Druckdatei nicht via FTPS gefunden: ${filename}`);
-  }
-
-  /**
-   * Durchsucht die SD-Karte (FTPS-Wurzel) rekursiv nach einer Druckdatei, deren
-   * Name zu `name` passt (Leerzeichen/Unterstriche gleichgesetzt) und auf
-   * `.gcode.3mf`/`.3mf` endet. Eine einzige FTPS-Verbindung für den ganzen Lauf;
-   * Tiefe + Rausch-Ordner begrenzt, damit grosse SD-Karten nicht ausufern.
-   */
-  private async searchSdForFile(name: string): Promise<{ path: string; buf: Buffer } | null> {
-    const ftp = new FTPClient();
-    ftp.ftp.verbose = false;
-    try {
-      await ftp.access({
-        host: this.ip,
-        port: 990,
-        user: 'bblp',
-        password: this.accessCode,
-        secure: 'implicit',
-        secureOptions: { rejectUnauthorized: false },
-      });
-      const target = normalizeName(name);
-      const match = await this.walkSd(ftp, '/', target, 0);
-      if (!match) { ftp.close(); return null; }
-      const writable = new BufferWritable();
-      await ftp.downloadTo(writable, match);
-      ftp.close();
-      return { path: match, buf: writable.getBuffer() };
+        for (const dir of ['/cache', '/', '/model']) {
+          let entries: DirEntry[];
+          try { entries = await s.list(dir); } catch (e) { if (isMissing(e)) continue; throw e; }
+          const file = entries.find(e => !e.isDir && matches(e.name));
+          if (file) { const path = joinPath(dir, file.name); return { path, buf: await s.retr(path) }; }
+        }
+        // Prints started on the printer from the SD card sit in their own folder.
+        const path = await walkSd(s, '/', matches, 0);
+        return path ? { path, buf: await s.retr(path) } : null;
+      }, this.opts.ftps);
     } catch (err: unknown) {
-      ftp.close();
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[bambu] FTPS-SD-Suche fehlgeschlagen: ${msg}`);
-      return null;
+      console.warn(`[bambu] FTPS-Fehler (${name}): ${msg}`);
+      addEvent(this.printerId, 'warn', `FTPS-Fehler: ${msg.slice(0, 80)}`);
+      return 'error';
     }
-  }
-
-  private async walkSd(ftp: FTPClient, dir: string, target: string, depth: number): Promise<string | null> {
-    const MAX_DEPTH = 3;
-    const SKIP_DIRS = new Set(['timelapse', 'ipcam', 'logger', 'log']);
-    let entries: FileInfo[];
-    try {
-      entries = await ftp.list(dir);
-    } catch {
-      return null;
+    if (!hit) {
+      // Typical for H2C/H2D/X2D jobs kept in internal storage: expected, reported once.
+      console.warn(`[bambu] Druckdatei nicht via FTPS abrufbar (nicht auf der SD-Karte): ${name}`);
+      addEvent(this.printerId, 'warn', `Druckdatei nicht via FTPS gefunden: ${name}`);
+      return 'missing';
     }
-    // Erst Dateien im aktuellen Ordner prüfen…
-    for (const e of entries) {
-      if (!e.isFile) continue;
-      const lower = e.name.toLowerCase();
-      if (!lower.endsWith('.gcode.3mf') && !lower.endsWith('.3mf')) continue;
-      const base = e.name.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '');
-      if (normalizeName(base) === target) return joinPath(dir, e.name);
-    }
-    // …dann Unterordner (bis MAX_DEPTH, Rausch-Ordner überspringen).
-    if (depth >= MAX_DEPTH) return null;
-    for (const e of entries) {
-      if (!e.isDirectory || e.name.startsWith('.')) continue;
-      if (SKIP_DIRS.has(e.name.toLowerCase())) continue;
-      const found = await this.walkSd(ftp, joinPath(dir, e.name), target, depth + 1);
-      if (found) return found;
-    }
-    return null;
+    const weights = this.applyPrintFile(name, hit.path, hit.buf);
+    console.log(`[bambu] Druckdatei geladen: ${hit.path} → ${weights.length} Filament(e) geparst`);
+    addEvent(this.printerId, 'success', `Druckdatei geladen: ${hit.path.split('/').pop()} (${weights.length} Slot(s))`);
+    return 'ok';
   }
 
   amsSignature(): string {
