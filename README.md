@@ -252,6 +252,10 @@ Allowed origins: `https://flownt.app`, `https://www.flownt.app`, `capacitor://lo
 Requests whose `Host` is a public DNS name not listed in `FLOWNT_BRIDGE_ALLOWED_HOSTS` are refused
 (DNS-rebinding protection).
 
+A reverse proxy or tunnel on the same machine (cloudflared, nginx) makes every forwarded
+request look like it comes from this computer. Forward only `/camera/` through it (as in
+[CAMERA.md](CAMERA.md)), never the whole bridge.
+
 ---
 
 ## Mac/Windows — Keep the Bridge running (optional)
