@@ -1,8 +1,8 @@
 // AmsSlot, AmsHumidityUnit und PrinterStatus leben jetzt im geteilten Contract
 // (contract.ts, generiert aus supabase/functions/_shared/contract.ts im Haupt-Repo).
 // Re-Export, damit bestehende Importe aus adapters/types.js weiter funktionieren.
-export type { AmsSlot, AmsHumidityUnit, PrinterStatus } from '../contract.js';
-import type { AmsSlot, AmsHumidityUnit, PrinterStatus } from '../contract.js';
+export type { AmsSlot, AmsHumidityUnit, AmsUnitInfo, PrinterStatus } from '../contract.js';
+import type { AmsSlot, AmsHumidityUnit, AmsUnitInfo, PrinterStatus } from '../contract.js';
 
 // Normalisierter Job-Ausgang (Stufe C). Vom Adapter beim Terminal-Zustand gesetzt; sonst null.
 // completed = sauber beendet · aborted = abgebrochen (User-Stop/Cancel) · failed = Fehler.
@@ -26,6 +26,7 @@ export interface PrinterSnapshot {
   amsSlots?: AmsSlot[];
   activeMqttSlot?: number;
   amsHumidity?: AmsHumidityUnit[];
+  amsUnits?: AmsUnitInfo[];
   filamentMapping?: number[];     // Bambu print.mapping: Slicer-Filament-id (1-basiert) → physischer Tray-Code; 65535 = ungenutzt/extern
   parsedFilamentWeights?: FilamentWeight[] | null;
   cloudWeightG?: number | null;

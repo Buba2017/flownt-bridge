@@ -1,7 +1,7 @@
 import mqtt from 'mqtt';
 import { Client as FTPClient, FileInfo } from 'basic-ftp';
 import { Writable } from 'stream';
-import { Adapter, AmsHumidityUnit, AmsSlot, FilamentWeight, JobResult, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
+import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, JobResult, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
 import { parseFileBuffer } from './bambu-file-parser.js';
 import { addEvent } from '../events.js';
 
@@ -10,7 +10,14 @@ interface BambuAmsTray {
   tray_type?: string;
   tray_color?: string;  // Bambu sendet "0xFFAA00FF" (RRGGBBAA) oder "0xFFAA00"
   remain?: number;
-  tray_weight?: number;
+  tray_weight?: number | string;
+  tray_uuid?: string;       // spool identity from the RFID tag (zeros = no tag)
+  tag_uid?: string;         // RFID chip UID (zeros = no tag)
+  tray_info_idx?: string;   // Bambu filament code, e.g. "GFA00"
+  tray_sub_brands?: string; // product line, e.g. "PLA Basic"
+  tray_diameter?: string;
+  nozzle_temp_min?: string;
+  nozzle_temp_max?: string;
 }
 
 interface BambuAmsUnit {
@@ -19,7 +26,21 @@ interface BambuAmsUnit {
   humidity_raw?: string; // echte rel. Luftfeuchte in % (z.B. "24") — genau das liest auch HA
   temp?: string;         // "28.7" (°C, Innentemperatur der AMS-Einheit)
   tray?: BambuAmsTray[];
+  dry_time?: number;     // remaining drying time in minutes (AMS 2 Pro / AMS HT)
+  dry_setting?: { dry_temperature?: number; dry_duration?: number; dry_filament?: string };
 }
+
+// Response to the get_version request: one module per hardware part. AMS models are
+// identified by their module name prefix (same mapping as ha-bambulab).
+interface BambuInfo {
+  command?: string;
+  module?: Array<{ name?: string; product_name?: string }>;
+}
+
+const AMS_MODULE_PREFIX: Array<[string, NonNullable<AmsUnitInfo['model']>]> = [
+  ['ams_f1/', 'AMS Lite'], ['n3f/', 'AMS 2 Pro'], ['n3s/', 'AMS HT'], ['ams/', 'AMS'],
+];
+const DRYING_MODELS = new Set(['AMS 2 Pro', 'AMS HT']);
 
 interface BambuHms {
   attr: number;
@@ -49,7 +70,18 @@ interface BambuPrint {
 
 interface BambuReport {
   print?: BambuPrint;
+  info?: BambuInfo;
 }
+
+const isZeroId = (v?: string) => !v || /^0+$/.test(v);
+const unitId = (unit: BambuAmsUnit, index: number) => {
+  const id = parseInt(unit.id ?? '', 10);
+  return Number.isFinite(id) ? id : index;
+};
+const num = (v?: string | number | null) => {
+  const n = typeof v === 'number' ? v : parseFloat(v ?? '');
+  return Number.isFinite(n) ? n : null;
+};
 
 function mapState(state: string): PrinterStatus {
   switch (state.toUpperCase()) {
@@ -81,27 +113,60 @@ function normalizeColor(raw?: string): string {
   return '#' + hex.slice(0, 6).toUpperCase();
 }
 
+// Unit and slot numbers are the printer's own ids (unit*4+slot = Bambu tray code, as in
+// tray_now and print.mapping). Using array positions broke printers whose AMS ids do
+// not start at 0 (e.g. units 1 and 2).
 function parseAmsSlots(ams?: BambuPrint['ams']): AmsSlot[] {
   if (!ams?.ams?.length) return [];
-  return ams.ams.flatMap((unit, amsUnit) =>
-    (unit.tray ?? []).map((tray, slot) => ({
-      ams_unit: amsUnit,
-      slot,
-      material: tray.tray_type ?? '',
-      color: normalizeColor(tray.tray_color),
-      remain: tray.remain ?? 0,
-      tray_weight: tray.tray_weight ?? 1000,
-    }))
+  return ams.ams.flatMap((unit, index) =>
+    (unit.tray ?? []).map((tray, position) => {
+      const slot = parseInt(tray.id ?? '', 10);
+      return {
+        ams_unit: unitId(unit, index),
+        slot: Number.isFinite(slot) ? slot : position,
+        material: tray.tray_type ?? '',
+        color: normalizeColor(tray.tray_color),
+        remain: tray.remain ?? 0,
+        tray_weight: num(tray.tray_weight) || 1000,
+        tray_uuid: isZeroId(tray.tray_uuid) ? null : tray.tray_uuid!,
+        tag_uid: isZeroId(tray.tag_uid) ? null : tray.tag_uid!,
+        filament_code: tray.tray_info_idx || null,
+        sub_brand: tray.tray_sub_brands || null,
+        diameter_mm: num(tray.tray_diameter),
+        nozzle_temp_min: num(tray.nozzle_temp_min),
+        nozzle_temp_max: num(tray.nozzle_temp_max),
+      };
+    })
   );
+}
+
+function parseAmsUnits(ams: BambuPrint['ams'] | undefined, models: Map<number, AmsUnitInfo['model']>): AmsUnitInfo[] {
+  if (!ams?.ams?.length) return [];
+  return ams.ams.map((unit, index) => {
+    const id = unitId(unit, index);
+    const model = models.get(id) ?? null;
+    const canDry = model != null && DRYING_MODELS.has(model);
+    return {
+      ams_unit: id,
+      model,
+      slot_count: unit.tray?.length ?? (id >= 128 ? 1 : 4),
+      can_dry: canDry,
+      drying: canDry ? {
+        active: (unit.dry_time ?? 0) > 0,
+        temp_c: unit.dry_setting?.dry_temperature != null && unit.dry_setting.dry_temperature > 0 ? unit.dry_setting.dry_temperature : null,
+        remaining_min: (unit.dry_time ?? 0) > 0 ? unit.dry_time! : null,
+      } : null,
+    };
+  });
 }
 
 function parseAmsHumidity(ams?: BambuPrint['ams']): AmsHumidityUnit[] {
   if (!ams?.ams?.length) return [];
   return ams.ams
-    .map((unit, amsUnit): AmsHumidityUnit => {
+    .map((unit, index): AmsHumidityUnit => {
       const pct = parseInt(unit.humidity_raw ?? '', 10);
       return {
-        ams_unit: amsUnit,
+        ams_unit: unitId(unit, index),
         humidity: parseInt(unit.humidity ?? '0', 10),
         temp: parseFloat(unit.temp ?? '0'),
         humidity_pct: Number.isFinite(pct) && pct >= 0 && pct <= 100 ? pct : undefined,
@@ -143,6 +208,8 @@ const WATCHDOG_TICK_MS = 60_000;
 
 export class BambuAdapter implements Adapter {
   private cameraRtspUrl: string | null = null;
+  // AMS unit id → model, from the printer's module list (get_version).
+  private amsModels = new Map<number, AmsUnitInfo['model']>();
 
   getCameraRtspUrl(): string | null { return this.cameraRtspUrl; }
   private ip: string;
@@ -242,6 +309,13 @@ export class BambuAdapter implements Adapter {
         { qos: 0 },
         (err) => { if (err) console.error('[bambu] pushall error:', err.message); },
       );
+      // Module list: tells which AMS model each unit is (AMS / AMS Lite / AMS 2 Pro / AMS HT).
+      this.client!.publish(
+        `device/${this.serial}/request`,
+        JSON.stringify({ info: { command: 'get_version', sequence_id: '0' } }),
+        { qos: 0 },
+        (err) => { if (err) console.error('[bambu] get_version error:', err.message); },
+      );
     });
 
     this.client.on('message', (_topic, payload) => {
@@ -249,6 +323,17 @@ export class BambuAdapter implements Adapter {
       try {
         const raw = payload.toString();
         const msg = JSON.parse(raw) as BambuReport;
+        if (msg.info?.command === 'get_version' && Array.isArray(msg.info.module)) {
+          const models = new Map<number, AmsUnitInfo['model']>();
+          for (const m of msg.info.module) {
+            const hit = AMS_MODULE_PREFIX.find(([prefix]) => m.name?.startsWith(prefix));
+            const id = hit ? parseInt(m.name!.slice(hit[0].length), 10) : NaN;
+            if (hit && Number.isFinite(id)) models.set(id, hit[1]);
+          }
+          this.amsModels = models;
+          if (models.size) console.log('[bambu] AMS-Module:', [...models].map(([id, m]) => `${id}=${m}`).join(' '));
+          return;
+        }
         const p = msg.print;
         if (!p) return;
         if (typeof p.ipcam?.rtsp_url === 'string') this.cameraRtspUrl = p.ipcam.rtsp_url;
@@ -282,6 +367,7 @@ export class BambuAdapter implements Adapter {
           : p.ams?.tray_now;
         const amsSlots = parseAmsSlots(p.ams);
         const amsHumidity = parseAmsHumidity(p.ams);
+        const amsUnits = parseAmsUnits(p.ams, this.amsModels);
         const humSig = amsHumidity.map(u => `${u.ams_unit}:${u.humidity}/5${u.humidity_pct != null ? `/${u.humidity_pct}%` : ''}`).join(' ');
         if (humSig && humSig !== this.lastHumSig) {
           this.lastHumSig = humSig;
@@ -307,6 +393,7 @@ export class BambuAdapter implements Adapter {
           // Anzeige ständig auf „unbekannt" zurück.
           activeMqttSlot: trayNow ?? this.snapshot.activeMqttSlot,
           amsHumidity: amsHumidity.length > 0 ? amsHumidity : this.snapshot.amsHumidity,
+          amsUnits: amsUnits.length > 0 ? amsUnits : this.snapshot.amsUnits,
           // Mapping ist JOB-Zustand: bei neuem Druck verwerfen (wie parsedFilamentWeights).
           // Sonst erbt ein Druck OHNE eigenes Mapping (externe Spule!) das Mapping des
           // Vordrucks und der Verbrauch wird dessen AMS-Slot zugeordnet (Bug Test 3).

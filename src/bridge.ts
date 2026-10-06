@@ -32,6 +32,7 @@ async function push(
   if (snapshot.amsSlots?.length) body.ams_state = snapshot.amsSlots;
   if (snapshot.activeMqttSlot != null) body.ams_active_slot = snapshot.activeMqttSlot;
   if (snapshot.amsHumidity?.length) body.ams_humidity = snapshot.amsHumidity;
+  if (snapshot.amsUnits?.length) body.ams_units = snapshot.amsUnits;
   if (eventType === 'job_complete') {
     if (snapshot.parsedFilamentWeights?.length) {
       // Stufe B: pro Materialzeile die quell-abstrahierte Slot-Referenz mitführen.

@@ -42,6 +42,30 @@ export interface AmsSlot {
   color: string;       // "#FF6600" (normalisiert von Bambu "0xFFAA00")
   remain: number;      // 0–100 %
   tray_weight: number; // Gesamtgewicht der Spule in g (für optionale Gramm-Schätzung)
+  // Bambu RFID spool data (only for Bambu spools with a readable tag; null otherwise).
+  /** Spool identity from the RFID tag — identical for both tags of a spool. */
+  tray_uuid?: string | null;
+  /** UID of the RFID chip that was read. */
+  tag_uid?: string | null;
+  /** Bambu filament code (tray_info_idx), e.g. "GFA00" = PLA Basic. */
+  filament_code?: string | null;
+  /** Product line, e.g. "PLA Basic", "PLA Matte", "Support for PLA". */
+  sub_brand?: string | null;
+  diameter_mm?: number | null;
+  nozzle_temp_min?: number | null;
+  nozzle_temp_max?: number | null;
+}
+
+/** Detected AMS / multi-material unit (element of `ams_units` / `printers.live_ams_units`). */
+export interface AmsUnitInfo {
+  /** Unit id as reported by the printer (AMS 0–3; AMS HT starts at 128). */
+  ams_unit: number;
+  /** Model from the printer's module list (Bambu get_version), null if unknown. */
+  model: 'AMS' | 'AMS Lite' | 'AMS 2 Pro' | 'AMS HT' | null;
+  slot_count: number;
+  /** Unit can heat/dry filament (AMS 2 Pro, AMS HT). */
+  can_dry: boolean;
+  drying?: { active: boolean; temp_c?: number | null; remaining_min?: number | null } | null;
 }
 
 /** Luftfeuchte je AMS-Einheit (Element von `ams_humidity` / `printers.live_ams_humidity`). */
@@ -103,6 +127,7 @@ export interface IngestBody {
   ams_state?: AmsSlot[];
   ams_active_slot?: number;
   ams_humidity?: AmsHumidityUnit[];
+  ams_units?: AmsUnitInfo[];
   // Nur job_complete: verbrauchtes Material + optionale Mess-/Energie-Quellen
   filament_weights?: MaterialLine[];
   cloud_weight_g?: number;
@@ -155,6 +180,8 @@ export interface BridgeSyncRequest {
   action: 'sync';
   bridge_token: string;
   bridge_version?: string;
+  /** Public HTTPS base URL of this bridge (camera streaming), if configured. */
+  public_url?: string | null;
   discovered: DiscoveredDevice[];
   printers: LinkedPrinterState[];
   /** Secret ids applied since the last sync; Flownt deletes them. */

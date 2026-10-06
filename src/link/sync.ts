@@ -130,6 +130,9 @@ async function syncOnce(cb: LinkCallbacks): Promise<void> {
   const acked = ackQueue;
   const req: BridgeSyncRequest = {
     action: 'sync', bridge_token: cfg.link.bridgeToken, bridge_version: BRIDGE_VERSION,
+    // Public HTTPS address of this bridge (e.g. a tunnel exposing /camera); lets Flownt
+    // open the live camera without asking the user for the bridge address.
+    public_url: process.env.FLOWNT_PUBLIC_URL?.trim().replace(/\/+$/, '') || null,
     discovered: discoveredDevices(), printers, acked_secrets: acked,
   };
   const res = await post<BridgeSyncResponse>(req);
