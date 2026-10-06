@@ -6,8 +6,12 @@ import { promises as fs } from 'fs';
 import { randomUUID } from 'crypto';
 import {
   loadMultiConfig, saveMultiConfig,
-  PrinterConfig, BridgeLang, BridgeRole, newPrinterId,
+  PrinterConfig, BridgeLang, BridgeRole, newPrinterId, needsAccessCode,
 } from './config.js';
+import {
+  cloudLogin, cloudLoginWithEmailCode, cloudLoginWithTfa, fetchBoundDevices,
+  type CloudLoginStep, type CloudDevice,
+} from './bambu-cloud.js';
 import { Adapter, PrinterCommand, PrinterSnapshot } from './adapters/types.js';
 import { getEventLog } from './events.js';
 import { BRIDGE_VERSION } from './version.js';
@@ -202,6 +206,82 @@ const T: Record<BridgeLang, Tr> = {
   },
 } as const;
 
+// Strings for the access-code flow (manual entry or one-off Bambu Cloud lookup).
+const TA = {
+  de: {
+    missing: 'Access Code fehlt',
+    bannerTitle: (n: number) => n === 1 ? '1 Drucker wartet auf seinen Access Code' : `${n} Drucker warten auf ihren Access Code`,
+    bannerHint: 'Ohne Access Code kann sich die Bridge nicht mit dem Drucker verbinden. Wähle, wie du ihn hinterlegen möchtest:',
+    viaCloud: 'Mit Bambu Cloud anmelden',
+    viaManual: 'Codes manuell eingeben',
+    manualTitle: 'Access Codes eingeben',
+    manualHint: 'Den 8-stelligen Access Code zeigt jeder Drucker am Display unter Einstellungen → Netzwerk (bzw. WLAN). Leere Felder bleiben unverändert.',
+    saveCodes: 'Codes speichern & verbinden',
+    cloudTitle: 'Access Codes aus der Bambu Cloud',
+    cloudHint: 'Die Bridge meldet sich einmalig bei deinem Bambu-Lab-Konto an und übernimmt die Access Codes der Drucker, deren Seriennummer übereinstimmt. Passwort und Anmelde-Token werden nicht gespeichert — die Verbindung zu den Druckern läuft danach ausschließlich lokal im Netzwerk.',
+    email: 'E-Mail des Bambu-Lab-Kontos',
+    password: 'Passwort',
+    signIn: 'Anmelden & Codes abrufen',
+    emailCodeTitle: 'Bestätigungscode',
+    emailCodeHint: 'Bambu Lab hat dir einen Code per E-Mail geschickt.',
+    tfaTitle: 'Zwei-Faktor-Code',
+    tfaHint: 'Gib den Code aus deiner Authenticator-App ein.',
+    confirm: 'Bestätigen',
+    expired: 'Die Anmeldung ist abgelaufen — bitte erneut versuchen.',
+    resultTitle: 'Ergebnis',
+    applied: 'Code übernommen',
+    unchanged: 'unverändert',
+    notInAccount: 'nicht im Bambu-Konto',
+    notInBridge: 'Weitere Drucker in deinem Bambu-Konto (noch nicht in dieser Bridge):',
+    done: 'Fertig',
+    noneMissing: 'Alle Bambu-Drucker haben einen Access Code.',
+  },
+  en: {
+    missing: 'Access code missing',
+    bannerTitle: (n: number) => n === 1 ? '1 printer is waiting for its access code' : `${n} printers are waiting for their access code`,
+    bannerHint: 'Without an access code the bridge cannot connect to the printer. Choose how to provide it:',
+    viaCloud: 'Sign in with Bambu Cloud',
+    viaManual: 'Enter codes manually',
+    manualTitle: 'Enter access codes',
+    manualHint: 'Every printer shows its 8-digit access code on the display under Settings → Network (or WLAN). Empty fields stay unchanged.',
+    saveCodes: 'Save codes & connect',
+    cloudTitle: 'Access codes from Bambu Cloud',
+    cloudHint: 'The bridge signs in to your Bambu Lab account once and takes over the access codes of printers whose serial number matches. Password and sign-in token are not stored — afterwards the printers are reached purely over the local network.',
+    email: 'Bambu Lab account e-mail',
+    password: 'Password',
+    signIn: 'Sign in & fetch codes',
+    emailCodeTitle: 'Verification code',
+    emailCodeHint: 'Bambu Lab has e-mailed you a code.',
+    tfaTitle: 'Two-factor code',
+    tfaHint: 'Enter the code from your authenticator app.',
+    confirm: 'Confirm',
+    expired: 'The sign-in has expired — please try again.',
+    resultTitle: 'Result',
+    applied: 'code applied',
+    unchanged: 'unchanged',
+    notInAccount: 'not in the Bambu account',
+    notInBridge: 'More printers in your Bambu account (not in this bridge yet):',
+    done: 'Done',
+    noneMissing: 'All Bambu printers have an access code.',
+  },
+} as const;
+function ta() { return TA[getLang()]; }
+
+// Banner on status/setup pages when Bambu printers still lack an access code.
+function accessCodeBanner(printers: PrinterConfig[]): string {
+  const pending = printers.filter(needsAccessCode);
+  if (pending.length === 0) return '';
+  const a = ta();
+  return `<div class="card card-sm" style="border-color:#ff7a2f;margin-bottom:1rem;">
+    <div style="font-weight:700;margin-bottom:0.35rem;">🔑 ${a.bannerTitle(pending.length)}</div>
+    <p class="hint" style="margin-bottom:0.75rem;">${a.bannerHint} ${pending.map(p => escAttr(p.name)).join(', ')}</p>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+      <a href="/bambu-cloud" class="btn">${a.viaCloud}</a>
+      <a href="/access-codes" class="btn btn-ghost">${a.viaManual}</a>
+    </div>
+  </div>`;
+}
+
 function getLang(): BridgeLang { return loadMultiConfig().language; }
 function tr(): Tr { return T[getLang()]; }
 
@@ -384,6 +464,7 @@ function statusPage(): string {
       snap?.status === 'idle'      ? 'green'  : 'gray';
 
     const statusLabel =
+      needsAccessCode(printer)     ? ta().missing :
       !running                     ? t.offline  :
       snap?.status === 'printing'  ? t.printing :
       snap?.status === 'paused'    ? t.paused   :
@@ -501,6 +582,7 @@ function statusPage(): string {
     <a href="/setup/new" class="btn">${t.addPrinter}</a>
   </div>
 </div>
+${accessCodeBanner(cfg.printers)}
 <div class="printer-grid">${cards}</div>`, true);
 }
 
@@ -540,6 +622,7 @@ function setupListPage(): string {
     ${cfg.printers.length > 0 ? `<a href="/" class="btn btn-ghost">${t.backToStatus}</a>` : ''}
   </div>
 </div>
+${accessCodeBanner(cfg.printers)}
 <div class="card card-sm">
   <h1>${t.myPrinters}</h1>
   ${rows}
@@ -701,6 +784,103 @@ function parseForm(
       ...(shellyUrl?.trim() ? { smartPlugType: 'shelly' as const, smartPlugUrl: shellyUrl.trim() } : {}),
     },
   };
+}
+
+// ── Access codes: manual entry and one-off Bambu Cloud lookup ──────────────────
+
+function simplePage(title: string, inner: string): string {
+  return html(title, `
+<div class="topbar">
+  <span class="logo">⬡ ${tr().bridge}</span>
+  <div class="topbar-right"><a href="/" class="btn btn-ghost">${tr().backToStatus}</a></div>
+</div>
+<div class="card card-sm">${inner}</div>`);
+}
+
+function manualCodesPage(error?: string): string {
+  const a = ta();
+  const pending = loadMultiConfig().printers.filter(needsAccessCode);
+  if (pending.length === 0) return simplePage(a.manualTitle, `<h1>${a.manualTitle}</h1><p class="hint">${a.noneMissing}</p>`);
+  const rows = pending.map(p => `
+    <label>${escAttr(p.name)} <span class="hint" style="display:inline;">· ${escAttr(p.adapterUrl)} · ${escAttr(p.adapterSerial)}</span></label>
+    <input name="code_${escAttr(p.id)}" type="password" autocomplete="off" placeholder="8-stellig / 8 digits"/>`).join('');
+  return simplePage(a.manualTitle, `
+  <h1>${a.manualTitle}</h1>
+  ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
+  <p class="hint">${a.manualHint}</p>
+  <form method="POST" action="/access-codes">${rows}
+    <button class="btn btn-full" type="submit" style="margin-top:0.75rem;">${a.saveCodes}</button>
+  </form>
+  <p class="hint" style="margin-top:1rem;"><a href="/bambu-cloud">${a.viaCloud} →</a></p>`);
+}
+
+// Pending multi-step cloud sign-ins (e-mail code / 2FA). In memory only, short-lived.
+interface CloudPending { email: string; tfaKey?: string; expires: number; }
+const cloudPending = new Map<string, CloudPending>();
+const CLOUD_PENDING_TTL_MS = 10 * 60 * 1000;
+
+function cloudLoginPage(error?: string, email = ''): string {
+  const a = ta();
+  return simplePage(a.cloudTitle, `
+  <h1>${a.cloudTitle}</h1>
+  ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
+  <p class="hint">${a.cloudHint}</p>
+  <form method="POST" action="/bambu-cloud">
+    <label>${a.email}</label>
+    <input name="email" type="email" autocomplete="username" value="${escAttr(email)}" required/>
+    <label>${a.password}</label>
+    <input name="password" type="password" autocomplete="current-password" required/>
+    <button class="btn btn-full" type="submit" style="margin-top:0.75rem;">${a.signIn}</button>
+  </form>
+  <p class="hint" style="margin-top:1rem;"><a href="/access-codes">${a.viaManual} →</a></p>`);
+}
+
+function cloudCodePage(sessionId: string, kind: 'verifyCode' | 'tfa'): string {
+  const a = ta();
+  const title = kind === 'tfa' ? a.tfaTitle : a.emailCodeTitle;
+  return simplePage(title, `
+  <h1>${title}</h1>
+  <p class="hint">${kind === 'tfa' ? a.tfaHint : a.emailCodeHint}</p>
+  <form method="POST" action="/bambu-cloud/verify">
+    <input type="hidden" name="session" value="${escAttr(sessionId)}"/>
+    <input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus/>
+    <button class="btn btn-full" type="submit" style="margin-top:0.75rem;">${a.confirm}</button>
+  </form>`);
+}
+
+// Match cloud devices to configured Bambu printers by serial and take over their codes.
+function applyCloudCodes(devices: CloudDevice[], onUpdate: (cfg: PrinterConfig) => void): string {
+  const a = ta();
+  const multi = loadMultiConfig();
+  const bySerial = new Map(devices.map(d => [d.serial.toUpperCase(), d]));
+  const updated: PrinterConfig[] = [];
+  const rows = multi.printers.filter(p => p.adapterType === 'bambu').map(p => {
+    const d = bySerial.get(p.adapterSerial.toUpperCase());
+    let result: string = a.notInAccount;
+    if (d?.accessCode) {
+      if (d.accessCode !== p.adapterApiKey) {
+        p.adapterApiKey = d.accessCode;
+        updated.push(p);
+        result = `✓ ${a.applied}`;
+      } else {
+        result = a.unchanged;
+      }
+    }
+    return `<div class="list-row"><div style="flex:1;"><div class="list-name">${escAttr(p.name)}</div>
+      <div class="list-sub">${escAttr(p.adapterSerial)}</div></div><span class="badge">${escAttr(result)}</span></div>`;
+  }).join('');
+  if (updated.length) {
+    saveMultiConfig(multi);
+    for (const p of updated) onUpdate(p);
+  }
+  const known = new Set(multi.printers.map(p => p.adapterSerial.toUpperCase()));
+  const extra = devices.filter(d => !known.has(d.serial.toUpperCase()));
+  const extraHtml = extra.length
+    ? `<p class="hint" style="margin-top:1rem;">${a.notInBridge}</p>` + extra.map(d =>
+        `<div class="list-sub">${escAttr(d.name)} · ${escAttr(d.model)} · ${escAttr(d.serial)}</div>`).join('')
+    : '';
+  return simplePage(a.resultTitle, `<h1>${a.resultTitle}</h1>${rows}${extraHtml}
+    <a href="/" class="btn btn-full" style="margin-top:1rem;">${a.done}</a>`);
 }
 
 // ── Dymo Connect proxy ─────────────────────────────────────────────────────────
@@ -944,6 +1124,69 @@ export function startServer(callbacks: ServerCallbacks): void {
   });
 
   app.get('/setup', (_req, res) => res.send(setupListPage()));
+
+  // ── Access codes ───────────────────────────────────────────────────────────
+  app.get('/access-codes', (_req, res) => res.send(manualCodesPage()));
+
+  app.post('/access-codes', (req, res) => {
+    const body = req.body as Record<string, string>;
+    const multi = loadMultiConfig();
+    const updated: PrinterConfig[] = [];
+    for (const p of multi.printers.filter(needsAccessCode)) {
+      const code = body[`code_${p.id}`]?.trim();
+      if (code) { p.adapterApiKey = code; updated.push(p); }
+    }
+    if (updated.length) {
+      saveMultiConfig(multi);
+      for (const p of updated) callbacks.onUpdate(p);
+    }
+    res.redirect('/');
+  });
+
+  app.get('/bambu-cloud', (_req, res) => res.send(cloudLoginPage()));
+
+  const finishCloud = async (step: CloudLoginStep, email: string, res: express.Response) => {
+    if (step.kind === 'token') {
+      try {
+        const devices = await fetchBoundDevices(step.token);
+        return res.send(applyCloudCodes(devices, callbacks.onUpdate));
+      } catch (e) {
+        return res.send(cloudLoginPage(String((e as Error).message ?? e), email));
+      }
+    }
+    if (step.kind === 'verifyCode' || step.kind === 'tfa') {
+      const id = randomUUID();
+      cloudPending.set(id, { email, tfaKey: step.kind === 'tfa' ? step.tfaKey : undefined, expires: Date.now() + CLOUD_PENDING_TTL_MS });
+      return res.send(cloudCodePage(id, step.kind));
+    }
+    return res.send(cloudLoginPage(step.message, email));
+  };
+
+  app.post('/bambu-cloud', async (req, res) => {
+    const { email, password } = req.body as { email?: string; password?: string };
+    if (!email?.trim() || !password) return res.send(cloudLoginPage(undefined, email ?? ''));
+    try {
+      await finishCloud(await cloudLogin(email.trim(), password), email.trim(), res);
+    } catch (e) {
+      res.send(cloudLoginPage(String((e as Error).message ?? e), email));
+    }
+  });
+
+  app.post('/bambu-cloud/verify', async (req, res) => {
+    const { session, code } = req.body as { session?: string; code?: string };
+    const pending = session ? cloudPending.get(session) : undefined;
+    if (session) cloudPending.delete(session);
+    for (const [k, v] of cloudPending) if (v.expires < Date.now()) cloudPending.delete(k);
+    if (!pending || pending.expires < Date.now() || !code?.trim()) return res.send(cloudLoginPage(ta().expired));
+    try {
+      const step = pending.tfaKey
+        ? await cloudLoginWithTfa(pending.tfaKey, code.trim())
+        : await cloudLoginWithEmailCode(pending.email, code.trim());
+      await finishCloud(step, pending.email, res);
+    } catch (e) {
+      res.send(cloudLoginPage(String((e as Error).message ?? e), pending.email));
+    }
+  });
 
   app.get('/setup/new', (req, res) => {
     const q = req.query as Record<string, string | undefined>;

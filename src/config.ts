@@ -95,3 +95,9 @@ export function saveMultiConfig(cfg: MultiConfig): void {
 export function newPrinterId(): string {
   return randomUUID();
 }
+
+// A Bambu printer can be configured before its LAN access code is known (e.g. created
+// from Flownt); it then waits instead of connecting with an empty code.
+export function needsAccessCode(p: PrinterConfig): boolean {
+  return p.adapterType === 'bambu' && !p.adapterApiKey?.trim();
+}

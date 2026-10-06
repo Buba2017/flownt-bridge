@@ -100,3 +100,79 @@ export class BambuCloudClient {
     return null;
   }
 }
+
+// ── Access-code lookup (one-off login, nothing is persisted) ───────────────────
+// Used by the web UI to fill in the LAN access codes of printers bound to a Bambu
+// account. Neither the password nor the resulting token is stored.
+
+export type CloudLoginStep =
+  | { kind: 'token'; token: string }
+  | { kind: 'verifyCode' }               // Bambu e-mailed a one-time code
+  | { kind: 'tfa'; tfaKey: string }      // authenticator app code required
+  | { kind: 'error'; message: string };
+
+export interface CloudDevice {
+  serial: string;
+  name: string;
+  model: string;
+  accessCode: string;
+  online: boolean;
+}
+
+async function postJson(url: string, body: unknown): Promise<{ data: Record<string, unknown>; setCookie: string[] }> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: HEADERS,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await res.text();
+  let data: Record<string, unknown> = {};
+  try { data = text ? JSON.parse(text) as Record<string, unknown> : {}; } catch { data = { message: text.slice(0, 200) }; }
+  return { data, setCookie: res.headers.raw()['set-cookie'] ?? [] };
+}
+
+function stepFrom(data: Record<string, unknown>): CloudLoginStep {
+  if (typeof data.accessToken === 'string' && data.accessToken) return { kind: 'token', token: data.accessToken };
+  if (data.loginType === 'verifyCode') return { kind: 'verifyCode' };
+  if (data.loginType === 'tfa' && typeof data.tfaKey === 'string') return { kind: 'tfa', tfaKey: data.tfaKey };
+  return { kind: 'error', message: String(data.message ?? data.error ?? 'Login fehlgeschlagen') };
+}
+
+export async function cloudLogin(email: string, password: string): Promise<CloudLoginStep> {
+  const { data } = await postJson(`${BASE_URL}/user/login`, { account: email, password, apiError: '' });
+  const step = stepFrom(data);
+  if (step.kind === 'verifyCode') {
+    // The login answer only says a code is needed; requesting it is a separate call.
+    await postJson(`${BASE_URL}/user/sendemail/code`, { email, type: 'codeLogin' });
+  }
+  return step;
+}
+
+export async function cloudLoginWithEmailCode(email: string, code: string): Promise<CloudLoginStep> {
+  const { data } = await postJson(`${BASE_URL}/user/login`, { account: email, code });
+  return stepFrom(data);
+}
+
+export async function cloudLoginWithTfa(tfaKey: string, code: string): Promise<CloudLoginStep> {
+  const { data, setCookie } = await postJson('https://bambulab.com/api/sign-in/tfa', { tfaKey, tfaCode: code });
+  const cookie = setCookie.find(c => c.startsWith('token='));
+  if (cookie) return { kind: 'token', token: cookie.split(';', 1)[0].slice('token='.length) };
+  return stepFrom(data);
+}
+
+export async function fetchBoundDevices(token: string): Promise<CloudDevice[]> {
+  const res = await fetch('https://api.bambulab.com/v1/iot-service/api/user/bind', {
+    headers: { ...HEADERS, Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`Bambu Cloud ${res.status}`);
+  const data = await res.json() as { devices?: Array<Record<string, unknown>> };
+  return (data.devices ?? []).map(d => ({
+    serial: String(d.dev_id ?? ''),
+    name: String(d.name ?? ''),
+    model: String(d.dev_product_name ?? d.dev_model_name ?? ''),
+    accessCode: String(d.dev_access_code ?? ''),
+    online: d.online === true,
+  })).filter(d => d.serial);
+}

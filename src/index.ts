@@ -1,5 +1,5 @@
 import open from 'open';
-import { loadMultiConfig, PrinterConfig, newPrinterId, FLOWNT_EDGE_URL } from './config.js';
+import { loadMultiConfig, PrinterConfig, newPrinterId, FLOWNT_EDGE_URL, needsAccessCode } from './config.js';
 import { MoonrakerAdapter } from './adapters/moonraker.js';
 import { PrusaLinkAdapter } from './adapters/prusa.js';
 import { BambuAdapter } from './adapters/bambu.js';
@@ -43,8 +43,14 @@ function startPrinter(cfg: PrinterConfig): void {
     state = makePrinterState();
     printerStates.set(cfg.id, state);
   }
+  state.error = null;
+  if (needsAccessCode(cfg)) {
+    // Shown as "access code missing" in the web UI; started once a code is saved.
+    state.running = false;
+    console.log(`[flownt-bridge] ${cfg.name}: wartet auf Access Code`);
+    return;
+  }
   state.running = true;
-  state.error   = null;
 
   const adapter = buildAdapter(cfg);
   state.adapter = adapter;
