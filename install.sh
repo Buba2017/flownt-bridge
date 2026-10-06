@@ -16,6 +16,10 @@
 # Supported: FLOWNT_BRIDGE_HOST, FLOWNT_BRIDGE_ADMIN_PASSWORD, FLOWNT_ALLOWED_ORIGINS,
 # FLOWNT_EDGE_URL, FLOWNT_BRIDGE_ALLOWED_HOSTS. Without FLOWNT_BRIDGE_HOST the bridge
 # listens on this computer only (127.0.0.1).
+#
+# The binary is verified against the release's SHA256SUMS; the install stops if it does
+# not match. FLOWNT_VERSION=v0.10.0 installs a specific release; FLOWNT_SKIP_CHECKSUM=1
+# skips the check (only for old releases published without SHA256SUMS).
 set -euo pipefail
 
 REPO="Buba2017/flownt-bridge"
@@ -40,7 +44,19 @@ case "$ARCH" in
   *) say "${RED}Nicht unterstützte Architektur: $ARCH${NC}"; exit 1 ;;
 esac
 ASSET="flownt-bridge-${PLATFORM}-${A}"
-URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+
+# Pin one release for binary and checksums, so a release published in between cannot
+# mix them up: FLOWNT_VERSION, else the tag "latest" currently redirects to.
+TAG="${FLOWNT_VERSION:-}"
+if [ -z "$TAG" ]; then
+  TAG="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" 2>/dev/null | sed -n 's#.*/releases/tag/##p')"
+fi
+if [ -n "$TAG" ]; then
+  BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+else
+  BASE_URL="https://github.com/${REPO}/releases/latest/download"
+fi
+URL="${BASE_URL}/${ASSET}"
 
 # Installationsziel: System-Pfad bei Root-Install (Linux → systemd-System-Dienst),
 # sonst pro Nutzer. Verhindert, dass der Dienst (als Nicht-Root-User) eine Binary
@@ -59,6 +75,32 @@ if ! curl -fSL --progress-bar "$URL" -o "$BIN.tmp"; then
   say "${RED}Download fehlgeschlagen.${NC} Asset '${ASSET}' evtl. (noch) nicht in den Releases:"
   say "  https://github.com/${REPO}/releases/latest"
   rm -f "$BIN.tmp"; exit 1
+fi
+
+# Prüfsumme gegen SHA256SUMS des Releases prüfen (fail closed)
+checksum_fail() {
+  say "${RED}Prüfsummen-Fehler:${NC} $1"
+  say "  Die Binary wurde NICHT installiert. Bitte später erneut versuchen oder melden:"
+  say "  https://github.com/${REPO}/issues"
+  say "  (Nur für ältere Releases ohne SHA256SUMS: mit FLOWNT_SKIP_CHECKSUM=1 erneut ausführen.)"
+  rm -f "$BIN.tmp"; exit 1
+}
+if [ "${FLOWNT_SKIP_CHECKSUM:-}" = "1" ]; then
+  say "${YELLOW}⚠ Prüfsumme NICHT geprüft (FLOWNT_SKIP_CHECKSUM=1).${NC}"
+else
+  SUMS="$(curl -fsSL "${BASE_URL}/SHA256SUMS" 2>/dev/null)" \
+    || checksum_fail "SHA256SUMS für ${TAG:-latest} nicht gefunden."
+  EXPECTED="$(printf '%s\n' "$SUMS" | awk -v f="$ASSET" '$2 == f || $2 == "*" f { print tolower($1); exit }')"
+  [ -n "$EXPECTED" ] || checksum_fail "kein Eintrag für ${ASSET} in SHA256SUMS."
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL="$(sha256sum "$BIN.tmp" | awk '{ print tolower($1) }')"
+  elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL="$(shasum -a 256 "$BIN.tmp" | awk '{ print tolower($1) }')"
+  else
+    checksum_fail "weder sha256sum noch shasum vorhanden."
+  fi
+  [ "$ACTUAL" = "$EXPECTED" ] || checksum_fail "${ASSET} stimmt nicht mit SHA256SUMS überein (erwartet ${EXPECTED}, erhalten ${ACTUAL})."
+  say "${GREEN}✓ Prüfsumme ok${NC} (${TAG:-latest})"
 fi
 mv "$BIN.tmp" "$BIN"
 chmod +x "$BIN"

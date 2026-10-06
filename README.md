@@ -358,8 +358,29 @@ The bridge initiates all connections outbound. No ports need to be opened on you
 
 ```bash
 npm install
-npm run package        # all platforms
+npm test               # all tests (tsx --test tests/*.test.ts)
+npm run typecheck
+npm run package        # all platforms (on Apple Silicon x64 targets need Rosetta 2)
 npm run package:mac    # macOS arm64 only (faster)
 ```
 
 Binaries are written to `dist/`.
+
+### Versioning and releases
+
+`package.json` `"version"` is the only place to bump: `npm run build` inlines it into the
+bundle (`src/version.ts` reads `package.json` when run from source). It is shown in the UI
+footer, at `GET /api/version` and `GET /healthz`, and reported to Flownt.
+
+Release: bump the version, commit, then push a matching tag (`git tag v0.11.0 && git push --tags`).
+`.github/workflows/release.yml` runs tests, builds all five binaries with `npm run package`,
+writes `SHA256SUMS` and attaches everything to the GitHub release. `ci.yml` runs type check,
+tests and build on pushes to `main`/`develop` and on pull requests.
+
+The installers download `SHA256SUMS` from the same release and refuse to install a binary
+that does not match. `FLOWNT_VERSION=v0.11.0` pins a release; `FLOWNT_SKIP_CHECKSUM=1` skips
+the check for old releases that were published without `SHA256SUMS`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Buba2017/flownt-bridge/main/install.sh | FLOWNT_SKIP_CHECKSUM=1 bash
+```
