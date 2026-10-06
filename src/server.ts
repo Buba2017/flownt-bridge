@@ -279,7 +279,7 @@ function langSelector(returnUrl: string): string {
   const lang = getLang();
   const t = tr();
   return `<form class="lang-wrap" method="POST" action="/language">
-    <input type="hidden" name="returnUrl" value="${returnUrl}"/>
+    <input type="hidden" name="returnUrl" value="${escAttr(returnUrl)}"/>
     <label>${t.language}:</label>
     <select name="lang" onchange="this.form.submit()">
       <option value="de" ${lang === 'de' ? 'selected' : ''}>Deutsch</option>
@@ -420,8 +420,8 @@ function statusPage(): string {
           const isActive  = snap?.activeMqttSlot === globalIdx;
           const ring      = isActive ? 'box-shadow:0 0 0 2px #ff7a2f;' : '';
           return `<div style="text-align:center;flex:1;min-width:0;">
-            <div style="width:30px;height:30px;border-radius:50%;background:${sl.color};margin:0 auto 3px;${ring}border:1.5px solid rgba(128,128,128,0.5);"></div>
-            <div style="font-size:0.63rem;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${sl.material || '–'}</div>
+            <div style="width:30px;height:30px;border-radius:50%;background:${escAttr(sl.color)};margin:0 auto 3px;${ring}border:1.5px solid rgba(128,128,128,0.5);"></div>
+            <div style="font-size:0.63rem;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escAttr(sl.material || '–')}</div>
             <div style="font-size:0.63rem;color:#555;">${sl.remain ?? 0}%</div>
           </div>`;
         }).join('');
@@ -462,24 +462,24 @@ function statusPage(): string {
           return `<div class="ev-row">
             <span class="ev-icon" style="color:${color};">${icon}</span>
             <span class="ev-time">${time}</span>
-            <span class="ev-msg">${ev.msg}</span>
+            <span class="ev-msg">${escAttr(ev.msg)}</span>
           </div>`;
         }).join('');
 
     const errHtml = state?.error
-      ? `<div style="color:#ef4444;font-size:0.75rem;margin-bottom:0.5rem;">⚠ ${state.error.slice(0, 80)}</div>`
+      ? `<div style="color:#ef4444;font-size:0.75rem;margin-bottom:0.5rem;">⚠ ${escAttr(state.error.slice(0, 80))}</div>`
       : '';
 
     return `<div class="card">
       <div class="printer-header">
         <span class="dot ${dotClass}"></span>
-        <span class="printer-name">${printer.name}</span>
+        <span class="printer-name">${escAttr(printer.name)}</span>
         <span class="badge">${adapterLabel}</span>
         <a href="/setup/${printer.id}" class="btn btn-ghost" style="padding:0.3rem 0.625rem;font-size:0.78rem;">${t.edit}</a>
       </div>
       <div class="stat-box">
         <div style="font-size:1.1rem;font-weight:700;">${statusLabel}</div>
-        ${snap?.printFile ? `<div class="info-row">📄 ${snap.printFile}${snap.progressPct != null ? ` · ${snap.progressPct}%` : ''}${etaStr}</div>` : ''}
+        ${snap?.printFile ? `<div class="info-row">📄 ${escAttr(snap.printFile)}${snap.progressPct != null ? ` · ${snap.progressPct}%` : ''}${etaStr}</div>` : ''}
         ${snap?.tempHotend != null ? `<div class="info-row">🌡 ${snap.tempHotend}°C${snap.tempBed != null ? ` · ${t.bed} ${snap.tempBed}°C` : ''}</div>` : ''}
       </div>
       ${amsHtml}
@@ -517,8 +517,8 @@ function setupListPage(): string {
         return `<div class="list-row">
           <span class="dot ${dotClass}"></span>
           <div style="flex:1;">
-            <div class="list-name">${p.name}</div>
-            <div class="list-sub">${adapterLabel} · ${p.adapterUrl || '–'}</div>
+            <div class="list-name">${escAttr(p.name)}</div>
+            <div class="list-sub">${adapterLabel} · ${escAttr(p.adapterUrl || '–')}</div>
           </div>
           <div style="display:flex;gap:0.375rem;">
             <a href="/setup/${p.id}" class="btn btn-ghost" style="padding:0.3rem 0.625rem;font-size:0.78rem;">${t.edit}</a>
@@ -583,7 +583,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
 </div>
 <div class="card card-sm">
   <h1>${title}</h1>
-  ${error ? `<div class="err-banner">${error}</div>` : ''}
+  ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
   ${prefilled ? `<div class="ok-banner">${t.prefilledFromFlownt}</div>` : ''}
   <form method="POST" action="${action}">
 
@@ -607,7 +607,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <label>${t.serial}</label>
       <input name="bambuSerial" placeholder="${t.serialPlaceholder}" value="${vBambuSerial}"/>
       <label>${t.accessCode}</label>
-      <input name="bambuCode" type="password" placeholder="8-stelliger Code" value="${printer?.adapterType === 'bambu' ? printer.adapterApiKey : ''}"${prefilled ? ' autofocus' : ''}/>
+      <input name="bambuCode" type="password" placeholder="8-stelliger Code" value="${escAttr(printer?.adapterType === 'bambu' ? printer.adapterApiKey : '')}"${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.accessCodeHint}</p>
       <hr class="sep"/>
       <div class="section-label" style="margin-bottom:0.625rem;">${t.bambuCloud}</div>
@@ -622,21 +622,21 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <label>${t.printerUrl}</label>
       <input name="moonrakerUrl" placeholder="http://192.168.1.100" value="${vMoonUrl}"/>
       <label>${t.apiKey}</label>
-      <input name="moonrakerKey" type="password" value="${printer?.adapterType === 'moonraker' ? printer.adapterApiKey : ''}"/>
+      <input name="moonrakerKey" type="password" value="${escAttr(printer?.adapterType === 'moonraker' ? printer.adapterApiKey : '')}"/>
     </div>
 
     <div id="adapter-prusa">
       <label>${t.printerUrl}</label>
       <input name="prusaUrl" placeholder="http://192.168.1.100" value="${vPrusaUrl}"/>
       <label>${t.apiKey}</label>
-      <input name="prusaKey" type="password" value="${printer?.adapterType === 'prusa' ? printer.adapterApiKey : ''}"${prefilled ? ' autofocus' : ''}/>
+      <input name="prusaKey" type="password" value="${escAttr(printer?.adapterType === 'prusa' ? printer.adapterApiKey : '')}"${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.prusaApiKeyHint}</p>
     </div>
 
     <hr class="sep"/>
     <div class="section-label" style="margin-bottom:0.625rem;">${t.smartPlug}</div>
     <label>${t.smartPlugIp}</label>
-    <input name="shellyUrl" placeholder="192.168.1.50" value="${printer?.smartPlugUrl ?? ''}"/>
+    <input name="shellyUrl" placeholder="192.168.1.50" value="${escAttr(printer?.smartPlugUrl ?? '')}"/>
     <p class="hint">${t.smartPlugHint}</p>
 
     <button class="btn btn-full" type="submit" style="margin-top:0.5rem;">${t.save}</button>
@@ -862,7 +862,8 @@ export function startServer(callbacks: ServerCallbacks): void {
       cfg.language = lang;
       saveMultiConfig(cfg);
     }
-    res.redirect(returnUrl ?? '/');
+    // Only same-origin paths — never redirect to another site ("//host" included).
+    res.redirect(returnUrl && /^\/(?![/\\])/.test(returnUrl) ? returnUrl : '/');
   });
 
   // ── Pages ───────────────────────────────────────────────────────────────────
