@@ -40,6 +40,8 @@ export type PrinterCommand =
 
 export interface Adapter {
   getSnapshot(): Promise<PrinterSnapshot>;
+  /** LAN camera metadata only; credentials remain in the local printer config. */
+  getCameraRtspUrl?(): string | null;
   sendCommand?(cmd: PrinterCommand): Promise<void>;
   /** Ressourcen freigeben (MQTT-Client, Timer) — MUSS bei Config-Änderung/Löschen
    *  aufgerufen werden, sonst laufen alte Verbindungen als Geister weiter. */

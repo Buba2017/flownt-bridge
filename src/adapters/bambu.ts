@@ -27,6 +27,7 @@ interface BambuHms {
 }
 
 interface BambuPrint {
+  ipcam?: { rtsp_url?: string };
   command?: string;  // "push_status", "gcode_line", "project_file", …
   gcode_state?: string;
   mc_percent?: number;
@@ -141,6 +142,9 @@ const DATA_SILENCE_MS  = 5 * 60_000;
 const WATCHDOG_TICK_MS = 60_000;
 
 export class BambuAdapter implements Adapter {
+  private cameraRtspUrl: string | null = null;
+
+  getCameraRtspUrl(): string | null { return this.cameraRtspUrl; }
   private ip: string;
   private serial: string;
   private accessCode: string;
@@ -247,6 +251,7 @@ export class BambuAdapter implements Adapter {
         const msg = JSON.parse(raw) as BambuReport;
         const p = msg.print;
         if (!p) return;
+        if (typeof p.ipcam?.rtsp_url === 'string') this.cameraRtspUrl = p.ipcam.rtsp_url;
 
         // push_status = periodic full-state push (gcode_state may be "" when printer is idle)
         const isPushStatus = p.command === 'push_status';

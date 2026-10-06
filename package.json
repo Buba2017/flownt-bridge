@@ -1,11 +1,12 @@
 {
   "name": "flownt-bridge",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "description": "Local bridge connecting 3D printers to Flownt",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
+    "test:camera": "tsx --test tests/camera.test.ts",
     "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/bundle.cjs --log-level=info --banner:js=\"const __importMetaUrl=require('url').pathToFileURL(__filename).href;\" --define:import.meta.url=__importMetaUrl",
     "package": "npm run build && pkg dist/bundle.cjs --targets node18-macos-arm64,node18-macos-x64,node18-win-x64,node18-linux-arm64,node18-linux-x64 --output dist/flownt-bridge --compress GZip",
     "package:mac": "npm run build && pkg dist/bundle.cjs --targets node18-macos-arm64 --output dist/flownt-bridge-mac --compress GZip"

@@ -2,6 +2,8 @@
 
 Connects your 3D printer to Flownt in real time — live status, temperatures, progress, and automatic print log entries.
 
+Version 0.10.0 adds on-demand Bambu camera streaming. See [camera setup](CAMERA.md).
+
 ## Supported Printers
 
 | Printer | Status |

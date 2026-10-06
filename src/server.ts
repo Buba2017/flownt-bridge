@@ -11,6 +11,8 @@ import {
 import { Adapter, PrinterCommand, PrinterSnapshot } from './adapters/types.js';
 import { getEventLog } from './events.js';
 import { BRIDGE_VERSION } from './version.js';
+import { CameraRelay } from './camera/relay.js';
+import { registerCameraRoutes } from './camera/routes.js';
 
 const PORT = Number(process.env.FLOWNT_BRIDGE_PORT) || 7432;
 // Optional bind address, e.g. 127.0.0.1 on a shared server. Unset = all interfaces (as before).
@@ -609,6 +611,13 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <label>${t.accessCode}</label>
       <input name="bambuCode" type="password" placeholder="8-stelliger Code" value="${escAttr(printer?.adapterType === 'bambu' ? printer.adapterApiKey : '')}"${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.accessCodeHint}</p>
+      <label>${t === T.de ? 'Kamera-Verbindung' : 'Camera connection'}</label>
+      <select name="cameraTransport">
+        <option value="auto"${!printer?.cameraTransport || printer.cameraTransport === 'auto' ? ' selected' : ''}>${t === T.de ? 'Automatisch' : 'Automatic'}</option>
+        <option value="jpeg"${printer?.cameraTransport === 'jpeg' ? ' selected' : ''}>P1 / A1 (JPEG)</option>
+        <option value="rtsp"${printer?.cameraTransport === 'rtsp' ? ' selected' : ''}>X1 / H2 / P2 (RTSP)</option>
+      </select>
+      <p class="hint">${t === T.de ? 'Die Kamera startet nur beim Ansehen in Flownt. Für RTSP wird FFmpeg auf diesem Computer benötigt. Am Drucker ggf. LAN-Liveview aktivieren; Bambu Cloud kann verbunden bleiben.' : 'The camera starts only while viewing in Flownt. RTSP requires FFmpeg on this computer. Enable LAN Liveview on the printer if needed; Bambu Cloud can stay connected.'}</p>
       <hr class="sep"/>
       <div class="section-label" style="margin-bottom:0.625rem;">${t.bambuCloud}</div>
       <label>${t.cloudEmail}</label>
@@ -659,7 +668,7 @@ function parseForm(
   id: string,
 ): { cfg: PrinterConfig | null; error?: string } {
   const t = tr();
-  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, bambuCloudEmail, bambuCloudPassword, shellyUrl } = body;
+  const { name, token, adapterType, bambuUrl, bambuSerial, bambuCode, moonrakerUrl, moonrakerKey, prusaUrl, prusaKey, bambuCloudEmail, bambuCloudPassword, shellyUrl, cameraTransport } = body;
   if (!name?.trim())   return { cfg: null, error: t.nameRequired };
   if (!token?.trim())  return { cfg: null, error: t.tokenRequired };
   // Der Flownt-Auth-Token ist eine UUID (DB-Spalte uuid). Das Passwortfeld ist blind —
@@ -686,6 +695,7 @@ function parseForm(
       adapterApiKey:     isBambu ? bambuCode.trim() : isPrusa ? prusaKey.trim() : (moonrakerKey ?? '').trim(),
       adapterSerial:     isBambu ? bambuSerial.trim() : '',
       pollingIntervalMs: 30_000,
+      ...(isBambu ? { cameraTransport: cameraTransport === 'jpeg' || cameraTransport === 'rtsp' ? cameraTransport : 'auto' as const } : {}),
       ...(isBambu && bambuCloudEmail?.trim()    ? { bambuCloudEmail:    bambuCloudEmail.trim()    } : {}),
       ...(isBambu && bambuCloudPassword?.trim() ? { bambuCloudPassword: bambuCloudPassword.trim() } : {}),
       ...(shellyUrl?.trim() ? { smartPlugType: 'shelly' as const, smartPlugUrl: shellyUrl.trim() } : {}),
@@ -734,6 +744,12 @@ export function startServer(callbacks: ServerCallbacks): void {
   const app = express();
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json({ limit: '10mb' }));
+  const cameraRelay = new CameraRelay();
+  registerCameraRoutes(app, {
+    printers: () => loadMultiConfig().printers,
+    reportedUrl: id => printerStates.get(id)?.adapter?.getCameraRtspUrl?.(),
+    relay: cameraRelay,
+  });
 
   function setCorsHeaders(req: express.Request, res: express.Response) {
     res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*');
@@ -963,6 +979,7 @@ export function startServer(callbacks: ServerCallbacks): void {
     if (!updated) return res.send(printerFormPage(existing, error));
     multi.printers = multi.printers.map(p => p.id === id ? updated : p);
     saveMultiConfig(multi);
+    cameraRelay.invalidate(id);
     callbacks.onUpdate(updated);
     res.redirect('/');
   });
@@ -972,11 +989,20 @@ export function startServer(callbacks: ServerCallbacks): void {
     const multi = loadMultiConfig();
     multi.printers = multi.printers.filter(p => p.id !== id);
     saveMultiConfig(multi);
+    cameraRelay.invalidate(id);
     callbacks.onDelete(id);
     res.redirect('/setup');
   });
 
   const server = HOST ? app.listen(PORT, HOST) : app.listen(PORT);
+  const shutdown = () => { cameraRelay.dispose(); process.exit(0); };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+  server.on('close', () => {
+    cameraRelay.dispose();
+    process.removeListener('SIGINT', shutdown);
+    process.removeListener('SIGTERM', shutdown);
+  });
   server.on('listening', () => {
     console.log(`[flownt-bridge] Web UI running at http://${HOST ?? 'localhost'}:${PORT}`);
   });

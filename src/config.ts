@@ -21,6 +21,7 @@ export interface PrinterConfig {
   adapterApiKey: string;
   adapterSerial: string;
   pollingIntervalMs: number;
+  cameraTransport?: 'auto' | 'jpeg' | 'rtsp';
   bambuCloudEmail?: string;
   bambuCloudPassword?: string;
   // Optionaler Smart-Plug zur echten Strommessung (Shelly Gen1 + Gen2, Auto-Erkennung).
