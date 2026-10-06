@@ -331,6 +331,12 @@ export async function runBridge(
       continue;
     }
 
-    await sleep(cfg.pollingIntervalMs);
+    // Wait for the next poll, but push right away when the AMS contents change.
+    const amsSig = adapter.amsSignature?.();
+    const until = Date.now() + cfg.pollingIntervalMs;
+    while (Date.now() < until && !isCancelled()) {
+      await sleep(Math.min(1_000, until - Date.now()));
+      if (amsSig !== undefined && adapter.amsSignature?.() !== amsSig) break;
+    }
   }
 }

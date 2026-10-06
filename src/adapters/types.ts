@@ -45,6 +45,10 @@ export interface Adapter {
   /** LAN camera metadata only; credentials remain in the local printer config. */
   getCameraRtspUrl?(): string | null;
   sendCommand?(cmd: PrinterCommand): Promise<void>;
+  /** Cheap fingerprint of the AMS contents (spools, RFID, material, colour). When it
+   *  changes, the bridge pushes immediately instead of waiting for the poll interval,
+   *  so a newly inserted spool shows up in Flownt within seconds. */
+  amsSignature?(): string;
   /** Ressourcen freigeben (MQTT-Client, Timer) — MUSS bei Config-Änderung/Löschen
    *  aufgerufen werden, sonst laufen alte Verbindungen als Geister weiter. */
   dispose?(): void;

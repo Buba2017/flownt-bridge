@@ -596,6 +596,11 @@ export class BambuAdapter implements Adapter {
     return null;
   }
 
+  amsSignature(): string {
+    return (this.snapshot.amsSlots ?? [])
+      .map(s => `${s.ams_unit}.${s.slot}:${s.tray_uuid ?? ''}:${s.material}:${s.color}`).join('|');
+  }
+
   async getSnapshot(): Promise<PrinterSnapshot> {
     return this.snapshot;
   }
