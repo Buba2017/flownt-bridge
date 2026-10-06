@@ -127,9 +127,12 @@ sudo bash install.sh
 ```
 
 Der Installer:
-- Installiert Node.js 20 automatisch (falls nicht vorhanden)
-- Kopiert die Bridge nach `/opt/flownt-bridge/`
+- Lädt die **fertige Release-Binary** für die Architektur nach `/opt/flownt-bridge/` (der lokale
+  Build aus `npm run build` wird dabei **nicht** verwendet, Node.js wird nicht benötigt)
 - Richtet einen systemd-Service ein (startet automatisch beim Boot, neustart bei Absturz)
+
+Wer einen eigenen Build (z. B. mit Änderungen) als Dienst betreiben will, startet
+`node dist/bundle.cjs` über eine eigene systemd-Unit — siehe *Server-Betrieb* unten.
 
 Danach erreichbar unter `http://<Pi-IP-Adresse>:7432` — im Browser auf jedem Gerät im Heimnetz.
 
@@ -142,6 +145,47 @@ sudo systemctl restart flownt-bridge  # Neustarten
 **Update:**
 ```bash
 git pull && npm run build && sudo bash install.sh
+```
+
+---
+
+## Server-Betrieb / eigene Flownt-Instanz
+
+Für den Dauerbetrieb auf einem gemeinsam genutzten Linux-Server und für selbst gehostete
+Flownt-Instanzen liest die Bridge drei optionale Umgebungsvariablen (siehe `.env.example`):
+
+| Variable | Standard | Zweck |
+|---|---|---|
+| `FLOWNT_EDGE_URL` | flownt.app | Supabase-Edge-Functions-URL der eigenen Flownt-Instanz (`https://<ref>.supabase.co/functions/v1`) |
+| `FLOWNT_BRIDGE_HOST` | alle Interfaces | Bind-Adresse der Web-Oberfläche, z. B. `127.0.0.1` |
+| `FLOWNT_BRIDGE_PORT` | `7432` | Port der Web-Oberfläche |
+
+Die Web-Oberfläche hat **keine Anmeldung** und zeigt Tokens/Access Codes im Setup-Formular.
+Auf einem Server deshalb `FLOWNT_BRIDGE_HOST=127.0.0.1` setzen und die Oberfläche per SSH-Tunnel
+öffnen: `ssh -L 7432:127.0.0.1:7432 user@server` → `http://localhost:7432`.
+
+Beispiel-Unit mit eigenem Systembenutzer:
+
+```ini
+[Unit]
+Description=Flownt Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=flownt-bridge
+Environment=HOME=/var/lib/flownt-bridge
+Environment=FLOWNT_BRIDGE_HOST=127.0.0.1
+Environment=FLOWNT_EDGE_URL=https://<ref>.supabase.co/functions/v1
+ExecStart=/usr/bin/node /opt/flownt-bridge/bundle.cjs
+Restart=always
+RestartSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/flownt-bridge
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 ---

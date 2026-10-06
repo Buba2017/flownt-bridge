@@ -3,7 +3,10 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 
-export const FLOWNT_EDGE_URL = 'https://qvlmidtunxthqsxfutkq.supabase.co/functions/v1';
+// Flownt backend (Supabase Edge Functions). Self-hosted Flownt instances point the
+// bridge at their own project via FLOWNT_EDGE_URL; the default is flownt.app.
+const DEFAULT_EDGE_URL = 'https://qvlmidtunxthqsxfutkq.supabase.co/functions/v1';
+export const FLOWNT_EDGE_URL = (process.env.FLOWNT_EDGE_URL?.trim() || DEFAULT_EDGE_URL).replace(/\/+$/, '');
 
 export type BridgeLang = 'de' | 'en';
 

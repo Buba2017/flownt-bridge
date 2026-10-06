@@ -1,5 +1,5 @@
 import open from 'open';
-import { loadMultiConfig, PrinterConfig, newPrinterId } from './config.js';
+import { loadMultiConfig, PrinterConfig, newPrinterId, FLOWNT_EDGE_URL } from './config.js';
 import { MoonrakerAdapter } from './adapters/moonraker.js';
 import { PrusaLinkAdapter } from './adapters/prusa.js';
 import { BambuAdapter } from './adapters/bambu.js';
@@ -8,10 +8,11 @@ import { runBridge } from './bridge.js';
 import { Adapter } from './adapters/types.js';
 import { BRIDGE_VERSION } from './version.js';
 
-const PORT = 7432;
+const PORT = Number(process.env.FLOWNT_BRIDGE_PORT) || 7432;
 const URL  = `http://localhost:${PORT}`;
 
 console.log(`[flownt-bridge] v${BRIDGE_VERSION} startet…`);
+console.log(`[flownt-bridge] Flownt backend: ${FLOWNT_EDGE_URL}`);
 
 function buildAdapter(cfg: PrinterConfig): Adapter {
   if (cfg.adapterType === 'bambu') {

@@ -13,6 +13,8 @@ import { getEventLog } from './events.js';
 import { BRIDGE_VERSION } from './version.js';
 
 const PORT = Number(process.env.FLOWNT_BRIDGE_PORT) || 7432;
+// Optional bind address, e.g. 127.0.0.1 on a shared server. Unset = all interfaces (as before).
+const HOST = process.env.FLOWNT_BRIDGE_HOST?.trim() || undefined;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -973,7 +975,16 @@ export function startServer(callbacks: ServerCallbacks): void {
     res.redirect('/setup');
   });
 
-  app.listen(PORT, () => {
-    console.log(`[flownt-bridge] Web UI running at http://localhost:${PORT}`);
+  const server = HOST ? app.listen(PORT, HOST) : app.listen(PORT);
+  server.on('listening', () => {
+    console.log(`[flownt-bridge] Web UI running at http://${HOST ?? 'localhost'}:${PORT}`);
+  });
+  server.on('error', (e: NodeJS.ErrnoException) => {
+    // Without a handler a busy port crashes the process, and a service manager
+    // restarts it in a loop without saying why.
+    console.error(e.code === 'EADDRINUSE'
+      ? `[flownt-bridge] Port ${PORT} is already in use — set FLOWNT_BRIDGE_PORT to a free port.`
+      : `[flownt-bridge] Web UI failed to start: ${e.message}`);
+    process.exit(1);
   });
 }
