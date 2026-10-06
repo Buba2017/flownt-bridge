@@ -3,6 +3,7 @@ import { Client as FTPClient, FileInfo } from 'basic-ftp';
 import { Writable } from 'stream';
 import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, JobResult, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
 import { extractPlatePreview, parseFileBuffer } from './bambu-file-parser.js';
+import { ftpsDownload, ftpsList } from './ftps.js';
 import { addEvent } from '../events.js';
 
 interface BambuAmsTray {
@@ -462,8 +463,10 @@ export class BambuAdapter implements Adapter {
     // Datei so in /cache/ ab; MQTT meldet aber oft den Originalnamen mit Leerzeichen
     // (z. B. bei SD-Start). Darum beide Schreibweisen als feste Kandidaten probieren,
     // bevor die teure rekursive SD-Suche greift.
-    const underscored = name.replace(/ /g, '_');
-    const nameVariants = underscored === name ? [name] : [name, underscored];
+    // A "/" in the job name is stored as "2f" (URL encoding without "%").
+    const safe = name.replace(/\//g, '2f');
+    const underscored = safe.replace(/ /g, '_');
+    const nameVariants = [...new Set([safe, underscored])];
     const candidates: string[] = nameVariants.flatMap((n) => [
       `/cache/${n}.gcode.3mf`,
       `/cache/${n}.3mf`,
@@ -473,37 +476,44 @@ export class BambuAdapter implements Adapter {
     const filename = `${name}.gcode.3mf`;
     console.log(`[bambu] FTPS: Lade Druckdatei "${name}", versuche ${candidates.length} Pfad(e)…`);
     for (const remotePath of candidates) {
-      const ftp = new FTPClient();
-      ftp.ftp.verbose = false;
       try {
-        await ftp.access({
-          host: this.ip,
-          port: 990,
-          user: 'bblp',
-          password: this.accessCode,
-          secure: 'implicit',
-          secureOptions: { rejectUnauthorized: false },
-        });
-        console.log(`[bambu] FTPS verbunden, lade: ${remotePath}`);
-        const writable = new BufferWritable();
-        await ftp.downloadTo(writable, remotePath);
-        ftp.close();
-        const buf = writable.getBuffer();
+        // Own FTPS client: resumes the TLS session on the data connection, which newer
+        // Bambu firmware requires (basic-ftp gets "522 session reuse required").
+        const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
         const weights: FilamentWeight[] = parseFileBuffer(filename, buf);
         this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, buf) };
-        console.log(`[bambu] Druckdatei geladen: ${filename} → ${weights.length} Filament(e) geparst`);
+        console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
         addEvent(this.printerId, 'success', `Druckdatei geladen: ${filename} (${weights.length} Slot(s))`);
         return;
       } catch (err: unknown) {
-        ftp.close();
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('550')) {
+        if (msg.startsWith('550')) {
           console.log(`[bambu] FTPS 550 – nicht gefunden: ${remotePath}`);
         } else {
           console.warn(`[bambu] FTPS-Fehler (${remotePath}): ${msg}`);
           addEvent(this.printerId, 'warn', `FTPS-Fehler: ${msg.slice(0, 80)}`);
           return; // Verbindungsfehler → kein weiterer Versuch
         }
+      }
+    }
+    // Then the file lists of the usual folders (names may differ in spaces/underscores).
+    for (const dir of ['/cache', '/', '/model']) {
+      let names: string[];
+      try { names = await ftpsList(this.ip, this.accessCode, dir); } catch { continue; }
+      const target = normalizeName(safe);
+      const hit = names.map(n => n.split('/').pop() ?? n)
+        .find(n => /\.3mf$/i.test(n) && normalizeName(n.replace(/\.gcode\.3mf$/i, '').replace(/\.3mf$/i, '')) === target);
+      if (!hit) continue;
+      try {
+        const remotePath = joinPath(dir, hit);
+        const buf = await ftpsDownload(this.ip, this.accessCode, remotePath);
+        const weights: FilamentWeight[] = parseFileBuffer(hit, buf);
+        this.snapshot = { ...this.snapshot, parsedFilamentWeights: weights, printPreview: this.preview(name, buf) };
+        console.log(`[bambu] Druckdatei geladen: ${remotePath} → ${weights.length} Filament(e) geparst`);
+        addEvent(this.printerId, 'success', `Druckdatei geladen: ${hit} (${weights.length} Slot(s))`);
+        return;
+      } catch (err: unknown) {
+        console.warn(`[bambu] FTPS-Fehler (${dir}/${hit}): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // Fallback: an keinem festen Pfad gefunden → SD-Karte rekursiv durchsuchen.
