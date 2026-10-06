@@ -65,13 +65,15 @@ if [ "$PLATFORM" = "macos" ]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>app.flownt.bridge</string>
-  <key>ProgramArguments</key><array><string>$BIN</string></array>
+  <key>ProgramArguments</key><array><string>$BIN</string><string>--log-file</string><string>$INSTALL_DIR/bridge.log</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$INSTALL_DIR/bridge.log</string>
-  <key>StandardErrorPath</key><string>$INSTALL_DIR/bridge.log</string>
+  <key>StandardOutPath</key><string>$INSTALL_DIR/bridge.stdout.log</string>
+  <key>StandardErrorPath</key><string>$INSTALL_DIR/bridge.stdout.log</string>
 </dict></plist>
 EOF
+  # The bridge writes bridge.log itself and rotates it (5 MB × 3); launchd only catches
+  # output from before logging starts (e.g. a crash on startup) in bridge.stdout.log.
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
   say "${GREEN}✓ Autostart eingerichtet${NC} (launchd, startet bei Anmeldung)"

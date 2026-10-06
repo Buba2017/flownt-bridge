@@ -9,6 +9,7 @@ $repo  = 'Buba2017/flownt-bridge'
 $port  = 7432
 $dir   = Join-Path $env:LOCALAPPDATA 'flownt-bridge'
 $bin   = Join-Path $dir 'flownt-bridge.exe'
+$log   = Join-Path $dir 'bridge.log'
 $asset = 'flownt-bridge-win-x64.exe'
 $url   = "https://github.com/$repo/releases/latest/download/$asset"
 
@@ -35,7 +36,8 @@ Write-Host "OK Binary installiert: $bin" -ForegroundColor Green
 
 # Autostart bei Anmeldung (geplante Aufgabe; Fallback: Startup-Verknüpfung)
 try {
-  $action   = New-ScheduledTaskAction -Execute $bin
+  # The bridge writes and rotates its own log file (5 MB x 3).
+  $action   = New-ScheduledTaskAction -Execute $bin -Argument "--log-file `"$log`""
   $trigger  = New-ScheduledTaskTrigger -AtLogOn
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
   Register-ScheduledTask -TaskName 'FlowntBridge' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
@@ -44,14 +46,16 @@ try {
   $startup = [Environment]::GetFolderPath('Startup')
   $sc = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startup 'FlowntBridge.lnk'))
   $sc.TargetPath = $bin
+  $sc.Arguments = "--log-file `"$log`""
   $sc.Save()
   Write-Host "OK Autostart per Startup-Verknuepfung eingerichtet." -ForegroundColor Green
 }
 
 # Jetzt starten
-Start-Process -FilePath $bin
+Start-Process -FilePath $bin -ArgumentList "--log-file `"$log`""
 Start-Sleep -Seconds 2
 Write-Host "`nOK Flownt Bridge laeuft!`n" -ForegroundColor Green
 Write-Host "  Web-Oberflaeche:  http://localhost:$port"
 Write-Host "  Dort waehlst du, was die Bridge tun soll (Drucker ueberwachen / Etiketten drucken)."
+Write-Host "  Logs:             $log"
 Write-Host "  Stoppen:          Task-Manager -> 'flownt-bridge' beenden`n"
