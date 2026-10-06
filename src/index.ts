@@ -5,7 +5,7 @@ import { PrusaLinkAdapter } from './adapters/prusa.js';
 import { BambuAdapter } from './adapters/bambu.js';
 import { startServer, printerStates, PrinterBridgeState } from './server.js';
 import { runBridge } from './bridge.js';
-import { Adapter } from './adapters/types.js';
+import { Adapter, PrinterSnapshot } from './adapters/types.js';
 import { BRIDGE_VERSION } from './version.js';
 import { startDiscovery } from './link/discovery.js';
 import { pair, startSyncLoop, syncNow, type LinkCallbacks } from './link/sync.js';
@@ -50,7 +50,15 @@ function buildAdapter(cfg: PrinterConfig): Adapter {
 }
 
 function makePrinterState(): PrinterBridgeState {
-  return { snapshot: null, lastPushAt: null, running: false, error: null, adapter: null };
+  // The snapshot setter records when the adapter last delivered data (for /healthz).
+  let snapshot: PrinterSnapshot | null = null;
+  const state = { lastPushAt: null, running: false, error: null, adapter: null, lastSnapshotAt: null } as unknown as PrinterBridgeState;
+  Object.defineProperty(state, 'snapshot', {
+    enumerable: true,
+    get: () => snapshot,
+    set: (value: PrinterSnapshot | null) => { snapshot = value; if (value) state.lastSnapshotAt = new Date(); },
+  });
+  return state;
 }
 
 const runningBridges = new Map<string, () => void>();

@@ -207,6 +207,22 @@ WantedBy=multi-user.target
 
 ---
 
+## Health and diagnostics
+
+- `GET /healthz` — JSON without secrets: bridge and contract version, uptime, pairing/sync state
+  and per printer adapter type, `connected`, `status`, `last_message_age_s` (last snapshot from the
+  printer) and `last_push_age_s` (last push to Flownt). `status` is `ok` or `degraded`. Open from
+  this computer; from elsewhere only with `Authorization: Bearer <FLOWNT_BRIDGE_ADMIN_PASSWORD>`.
+  Example on a server: `curl -s http://127.0.0.1:7432/healthz | jq`.
+- `GET /diagnostics.zip` — support bundle (link under **Settings**): versions, health, redacted
+  config (tokens, access codes and passwords replaced by `[redacted]`), recent events and the last
+  1000 log lines (scrubbed of known secrets). Only from this computer (SSH tunnels work) and behind
+  the setup-UI login.
+- Other modules can add data to `/healthz` with `registerHealthProvider(name, fn)` from
+  `src/health-registry.ts`; a provider named `outbox` fills the top-level `outbox` field.
+
+---
+
 ## Paired bridges: protection against accidental printer removal
 
 A bridge paired with Flownt takes its printers from the `bridge-sync` function. If a sync
@@ -224,6 +240,8 @@ only applied after the same result was seen in 3 consecutive syncs spanning at l
 |---|---|
 | Setup UI (`/`, `/setup/*`, `/pair`, `/access-codes`, `/bambu-cloud`, `/api/state`, …) | Same-origin only. Every form carries a per-process CSRF token and the `Origin`/`Referer` must match the address the browser used (works through SSH tunnels). With `FLOWNT_BRIDGE_ADMIN_PASSWORD` a login is required. Stored tokens, access codes and passwords are never rendered back; empty secret fields keep the stored value. |
 | `GET /api/version` | Anyone; CORS only for allowed origins. Returns `{ version, command_auth: "bearer" }`. |
+| `GET /healthz` | This computer; others with the admin password as Bearer token. |
+| `GET /diagnostics.zip` | This computer only, same-origin, behind the setup-UI login. |
 | `POST /printer/command` | Allowed origin **and** `Authorization: Bearer <Flownt bridge token of that printer>`. Without `Origin` (scripts) only from this computer. |
 | `POST /dymo/print` | Allowed origin from a browser on this computer, or `Authorization: Bearer <token of any printer on this bridge>`. |
 | `GET /camera/stream` | `Authorization: Bearer <printer token>`; allowed origin for browsers. |

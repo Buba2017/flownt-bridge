@@ -23,6 +23,7 @@ import {
   isSameOriginRequest, newSecret, normalizeOrigin, originPolicy, safeEqual,
 } from './http-auth.js';
 import { createLogger } from './logger.js';
+import { buildDiagnosticsZip, healthReport } from './diagnostics.js';
 
 const log = createLogger('server');
 const PORT = Number(process.env.FLOWNT_BRIDGE_PORT) || 7432;
@@ -50,6 +51,8 @@ export interface PrinterBridgeState {
   running: boolean;
   error: string | null;
   adapter: Adapter | null;
+  /** When the adapter last produced a snapshot (set by the state's snapshot setter). */
+  lastSnapshotAt?: Date | null;
 }
 
 export const printerStates = new Map<string, PrinterBridgeState>();
@@ -731,6 +734,8 @@ function originsCard(origins: string[], error?: string): string {
     <textarea name="origins" rows="3" style="width:100%;background:#111;border:1px solid #333;border-radius:8px;padding:0.625rem 0.875rem;color:#e5e5e5;font-size:0.85rem;margin-bottom:0.75rem;" placeholder="https://flownt.example.com">${escAttr(origins.join('\n'))}</textarea>
     <button class="btn btn-full" type="submit">${de ? 'Speichern' : 'Save'}</button>
   </form>
+  <hr class="sep"/>
+  <a href="/diagnostics.zip" class="btn btn-ghost btn-full">${de ? 'Diagnosepaket herunterladen (ohne Tokens & Codes)' : 'Download diagnostics (no tokens or codes)'}</a>
 </div>`;
 }
 
@@ -1094,7 +1099,7 @@ function printerByToken(token: string | null): PrinterConfig | undefined {
 
 // Paths the Flownt web app calls from the browser. They have their own CORS + token
 // checks and never see the setup-UI login or CSRF guard.
-const API_PATHS = new Set(['/api/version', '/printer/command', '/dymo/print']);
+const API_PATHS = new Set(['/api/version', '/printer/command', '/dymo/print', '/healthz']);
 
 export function createApp(callbacks: ServerCallbacks, options: AppOptions = {}) {
   const app = express();
@@ -1259,6 +1264,18 @@ export function createApp(callbacks: ServerCallbacks, options: AppOptions = {}) 
     }
   });
 
+  // ── Health ──────────────────────────────────────────────────────────────────
+  // No secrets. Open from this computer (monitoring via SSH, systemd checks); from
+  // elsewhere only with the admin password (`Authorization: Bearer <password>`).
+
+  app.get('/healthz', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!isLoopbackAddress(req.socket.remoteAddress) && !(admin.enabled && admin.check(req))) {
+      return res.status(403).json({ error: 'forbidden', hint: 'Only from this computer, or with FLOWNT_BRIDGE_ADMIN_PASSWORD as Bearer token.' });
+    }
+    res.json(await healthReport(printerStates));
+  });
+
   // ── Setup UI: headers, optional login, CSRF ─────────────────────────────────
 
   app.use((req, res, next) => {
@@ -1310,6 +1327,27 @@ export function createApp(callbacks: ServerCallbacks, options: AppOptions = {}) 
     admin.logout(req);
     res.setHeader('Set-Cookie', admin.clearCookie());
     res.redirect(admin.enabled ? '/login' : '/');
+  });
+
+  // ── Diagnostics bundle (redacted) ───────────────────────────────────────────
+  // Setup-UI login applies (above); additionally only from this computer (SSH tunnels
+  // count) and never from another site.
+
+  app.get('/diagnostics.zip', async (req, res) => {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      return res.status(403).type('text/plain').send('Diagnostics are only available on this computer (use an SSH tunnel).');
+    }
+    if (!isSameOriginRequest(req)) return res.status(403).send(securityErrorPage());
+    try {
+      const zip = await buildDiagnosticsZip(printerStates);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="flownt-bridge-diagnostics-${stamp}.zip"`);
+      res.send(Buffer.from(zip));
+    } catch (e) {
+      log.error('Building diagnostics failed:', e);
+      res.status(500).type('text/plain').send('Building diagnostics failed — see the bridge log.');
+    }
   });
 
   // ── API state ───────────────────────────────────────────────────────────────

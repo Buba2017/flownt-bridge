@@ -226,3 +226,48 @@ test('admin password protects the setup UI with a session cookie', async () => {
     await close(s2);
   }
 });
+
+test('/healthz reports versions and per-printer state without secrets; providers plug in', async () => {
+  const { registerHealthProvider } = await import('../src/health-registry.js');
+  const { CONTRACT_VERSION } = await import('../src/contract.js');
+  const off = registerHealthProvider('outbox', () => ({ queued: 2 }));
+  const offBroken = registerHealthProvider('broken', () => { throw new Error('nope'); });
+  try {
+    const res = await fetch(`${base}/healthz`);
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    for (const secret of [T1, T2, ACCESS_CODE, CLOUD_PW, MOON_KEY]) assert.ok(!text.includes(secret));
+    const body = JSON.parse(text);
+    assert.equal(body.contract_version, CONTRACT_VERSION);
+    assert.match(body.bridge_version, /^\d+\.\d+\.\d+/);
+    assert.equal(typeof body.uptime_s, 'number');
+    assert.deepEqual(body.outbox, { queued: 2 });
+    assert.deepEqual(body.providers.broken, { error: 'nope' });
+    const p1 = body.printers.find((p: { id: string }) => p.id === 'p1');
+    assert.equal(p1.adapter_type, 'bambu');
+    assert.equal(p1.connected, false);
+    assert.ok('last_message_age_s' in p1 && 'status' in p1);
+  } finally {
+    off(); offBroken();
+  }
+});
+
+test('/diagnostics.zip is redacted and refuses cross-site requests', async () => {
+  const { unzipSync, strFromU8 } = await import('fflate');
+  const { createLogger } = await import('../src/logger.js');
+  createLogger('test').info(`leaky line token=${T1} rtsps://bblp:${ACCESS_CODE}@10.0.0.5:322/x Bearer abc.def`);
+  assert.equal((await fetch(`${base}/diagnostics.zip`, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+  const res = await fetch(`${base}/diagnostics.zip`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'application/zip');
+  const files = unzipSync(new Uint8Array(await res.arrayBuffer()));
+  assert.deepEqual(Object.keys(files).sort(), ['config.redacted.json', 'events.json', 'health.json', 'recent.log', 'versions.json']);
+  for (const [name, data] of Object.entries(files)) {
+    const text = strFromU8(data);
+    for (const secret of [T1, T2, ACCESS_CODE, CLOUD_PW, MOON_KEY, 'abc.def']) assert.ok(!text.includes(secret), `${name} leaks ${secret}`);
+  }
+  const cfg = JSON.parse(strFromU8(files['config.redacted.json']));
+  assert.equal(cfg.printers[0].flowntAuthToken, '[redacted]');
+  assert.equal(cfg.printers[0].adapterSerial, '00M000');
+  assert.match(strFromU8(files['recent.log']), /leaky line token=\[redacted\]/);
+});
