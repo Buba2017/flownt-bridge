@@ -34,6 +34,20 @@ export interface PrinterSnapshot {
   hms?: HmsAlert[];             // active printer health messages
   printError?: string | null;   // "MMMM_EEEE" of the current/last job
   cloudWeightG?: number | null;
+  /** Last known state after a (re)connect, not yet confirmed by a full report. Job
+   *  start/end must not be derived from a stale snapshot. */
+  stale?: boolean;
+  /** Identity of the current/last job (changes with every new print). Adapters that
+   *  cannot tell leave it unset; the bridge then falls back to the print file. */
+  jobKey?: string | null;
+  layerNum?: number;            // current layer (Bambu layer_num)
+  totalLayers?: number;         // layers of the job (Bambu total_layer_num)
+  /** Job start reported by the printer, epoch seconds (Bambu gcode_start_time). */
+  jobStartedAtS?: number;
+  /** Slicer-predicted print time of the job in minutes (from the print file). */
+  estimatedDurationMin?: number | null;
+  /** The bridge sent a stop for the current job (a following FAILED is a cancel). */
+  stopRequested?: boolean;
   powerW?: number | null;       // aktuelle Wirkleistung vom Smart-Plug (Shelly), falls konfiguriert
   energyWhUsed?: number | null; // gemessener Energieverbrauch des Drucks in Wh (Zähler Ende − Start)
 }

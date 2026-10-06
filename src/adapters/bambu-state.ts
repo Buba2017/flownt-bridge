@@ -130,3 +130,48 @@ export function isTelemetry(p: PrintState, isOwnCommandReply: boolean): boolean 
   if (isOwnCommandReply && (p.result != null || p.reason != null)) return false;
   return true;
 }
+
+const nonZeroId = (v: unknown): string | null => {
+  const s = v == null ? '' : String(v).trim();
+  return s && !/^0+$/.test(s) ? s : null;
+};
+
+export interface JobIdentity {
+  /** Changes with every new print; null when the printer reports no job at all. */
+  key: string | null;
+  /** Globally unique job id for the backend's dedup, only when the printer has one. */
+  sourceJobId: string | null;
+}
+
+/**
+ * Identity of the printer's current/last job. Cloud jobs carry `subtask_id` / `job_id`;
+ * jobs sent over LAN report `subtask_id: ""` and `job_id: "0"` (seen on X1C, X2D, H2C),
+ * only `task_id` changes per job there. That id is a small printer-local number, so it
+ * identifies a new print but is not unique enough for the backend dedup. Last resort:
+ * the file name.
+ */
+export function jobIdentity(p: PrintState): JobIdentity {
+  const sub = nonZeroId(p.subtask_id);
+  if (sub) return { key: `subtask:${sub}`, sourceJobId: sub };
+  const job = nonZeroId(p.job_id);
+  if (job) return { key: `job:${job}`, sourceJobId: job };
+  const task = nonZeroId(p.task_id);
+  if (task) return { key: `task:${task}`, sourceJobId: null };
+  const name = typeof p.subtask_name === 'string' ? p.subtask_name.trim() : '';
+  if (name) return { key: `file:${name}`, sourceJobId: null };
+  return { key: null, sourceJobId: null };
+}
+
+const ACTIVE = new Set(['PREPARE', 'SLICING', 'RUNNING', 'PAUSE']);
+const ENDED = new Set(['FINISH', 'FAILED', 'IDLE', '']);
+export const isActiveGcodeState = (s: string | undefined) => s !== undefined && ACTIVE.has(s.toUpperCase());
+
+/**
+ * A new print started: the job identity changed while the printer is busy, or the
+ * printer went from an ended state back to busy (the same file printed again).
+ */
+export function isNewJob(prevKey: string | null, prevGcodeState: string | undefined, key: string | null, gcodeState: string | undefined): boolean {
+  if (!isActiveGcodeState(gcodeState) || key == null) return false;
+  if (key !== prevKey) return true;
+  return prevGcodeState !== undefined && ENDED.has(prevGcodeState.toUpperCase());
+}

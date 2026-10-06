@@ -148,8 +148,11 @@ export async function runBridge(
       // Ausgang aus dem normalisierten jobResult des Adapters; Fallback aus dem Status.
       let eventType: EventType = 'status_update';
       let durationMin: number | undefined;
+      // A stale snapshot (reconnected, no full report yet) only carries the last known
+      // state: no job start/end is derived from it, and prevStatus stays as it was.
+      const fresh = !snapshot.stale;
       const wasActive = prevStatus === 'printing' || prevStatus === 'paused';
-      const isTerminal = wasActive && (snapshot.status === 'idle' || snapshot.status === 'error');
+      const isTerminal = fresh && wasActive && (snapshot.status === 'idle' || snapshot.status === 'error');
       if (isTerminal) {
         const outcome = snapshot.jobResult ?? (snapshot.status === 'error' ? 'failed' : 'completed');
         eventType = outcome === 'completed' ? 'job_complete' : 'job_failed';
@@ -176,7 +179,7 @@ export async function runBridge(
         }
       }
       // Only (re-)start timer when transitioning into printing from a non-print state
-      if (snapshot.status === 'printing' && prevStatus !== 'printing' && prevStatus !== 'paused') {
+      if (fresh && snapshot.status === 'printing' && prevStatus !== 'printing' && prevStatus !== 'paused') {
         printStartedAt = Date.now();
         energyStartWh = lastEnergyWh; // Energiezähler-Stand bei Druckstart merken
         // JOB-Zustand des Vordrucks verwerfen: Das ams_mapping gehört zum jeweiligen Druck.
@@ -191,7 +194,8 @@ export async function runBridge(
       // Job-ID waehrend des Drucks merken → beim Abschluss senden (Dedup gegen Re-Emission)
       if (snapshot.status === 'printing' && snapshot.sourceJobId) lastSourceJobId = snapshot.sourceJobId;
 
-      prevStatus = snapshot.status;
+      // offline is no job state: a connection drop must not end or restart the job.
+      if (fresh && snapshot.status !== 'offline') prevStatus = snapshot.status;
 
       // Aktiven physischen Slot merken, SOBALD der Drucker ihn meldet (0–15 = AMS-Slot,
       // 254 = externe Spule; 255 = kein Tray → ignorieren, letzter bekannter zählt).

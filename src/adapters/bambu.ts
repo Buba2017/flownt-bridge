@@ -5,7 +5,7 @@ import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAler
 import { extractPlatePreview, parseFileBuffer } from './bambu-file-parser.js';
 import { ftpsDownload, ftpsList } from './ftps.js';
 import { addEvent } from '../events.js';
-import { isTelemetry, mergePrintState, PrintState, toInt } from './bambu-state.js';
+import { isActiveGcodeState, isNewJob, isTelemetry, jobIdentity, mergePrintState, PrintState, toInt } from './bambu-state.js';
 
 interface BambuAmsTray {
   id?: string | number;
@@ -76,6 +76,11 @@ interface BambuPrint {
     ams?: BambuAmsUnit[];
     tray_now?: number | string; // aktiver Slot (globaler Index: ams_unit*4 + slot); Bambu sendet manchmal string
   };
+  task_id?: string;          // per-job id of LAN jobs (subtask_id is "" and job_id "0" there)
+  gcode_start_time?: string | number; // job start, epoch s (not sent by all firmware)
+  layer_num?: number;
+  total_layer_num?: number;
+  '3D'?: { layer_num?: number; total_layer_num?: number };
   mapping?: number[]; // Slicer-Filament-id (1-basiert, Index = id-1) → physischer Tray-Code; 65535 = ungenutzt/extern
 }
 
@@ -259,18 +264,23 @@ function joinPath(dir: string, name: string): string {
   return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
 }
 
-// Reconnect-Backoff: A1/P1 bedienen lokal effektiv nur EINEN MQTT-Client; jeder
-// fehlgeschlagene Versuch hinterlässt druckerseitig eine halb-offene Verbindung, die
-// den Slot bis zum TCP-Keepalive-Timeout (~20 min) blockieren kann. Aggressives
-// 5s-Dauerfeuer (alt) ist der dokumentierte Auslöser dafür (BambuStudio#2404,
-// ha-bambulab#174) — daher ansteigender Abstand.
-const RECONNECT_MIN_MS = 15_000;
-const RECONNECT_MAX_MS = 120_000;
-// Verbunden, aber keine Push-Daten mehr: dokumentiertes Firmware-Verhalten, wenn ein
-// zweiter Client (Bambu Handy/Studio) die Verbindung übernimmt — die alte bleibt
-// offen, bekommt aber nichts mehr. Der Watchdog erkennt das und baut sauber neu auf.
-const DATA_SILENCE_MS  = 5 * 60_000;
-const WATCHDOG_TICK_MS = 60_000;
+// Connection timing. The requested values: reconnect backoff 5 s → 60 s; a connected
+// session without data is rebuilt after 90 s (a second client such as Bambu Handy/Studio
+// can take over the session — the old one stays open but receives nothing). While the
+// printer is in PREPARE (parsing the job) a reconnect can make the job fail with HMS
+// 0500-4003, so there we only rebuild a session that is clearly dead (3 min silent).
+export const BAMBU_TIMINGS = {
+  reconnectMinMs: 5_000,
+  reconnectMaxMs: 60_000,
+  silenceMs: 90_000,
+  prepareSilenceMs: 3 * 60_000,
+  watchdogTickMs: 15_000,
+  /** Periodic full report request (catches anything a partial frame missed). */
+  pushallIntervalMs: 10 * 60_000,
+  /** Subscribed but nothing arrives: usually a wrong / mis-cased serial in the topic. */
+  noDataWarnMs: 60_000,
+};
+export type BambuTimings = typeof BAMBU_TIMINGS;
 
 /** Test hooks; production code passes none. */
 export interface BambuAdapterOptions {
@@ -280,10 +290,12 @@ export interface BambuAdapterOptions {
   brokerUrl?: string;
   /** false = never fetch print files over FTPS. */
   fetchFiles?: boolean;
+  timings?: Partial<BambuTimings>;
 }
 
 export class BambuAdapter implements Adapter {
   private readonly opts: BambuAdapterOptions;
+  private readonly t: BambuTimings;
   private cameraRtspUrl: string | null = null;
   // AMS unit id → model, from the printer's module list (get_version).
   private amsModels = new Map<number, AmsUnitInfo['model']>();
@@ -298,13 +310,23 @@ export class BambuAdapter implements Adapter {
   private snapshot: PrinterSnapshot = { status: 'offline' };
   // Merged push_status state (see bambu-state.ts); the snapshot is derived from it.
   private state: PrintState = {};
+  // True from (re)connect until the first report with gcode_state: the snapshot holds the
+  // last known state, which may be outdated.
+  private stale = true;
   private client: mqtt.MqttClient | null = null;
-  private reconnectDelayMs = RECONNECT_MIN_MS;
+  private reconnectDelayMs: number;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private lastMessageAt = 0;
-  // Zuletzt gemeldeter echter Feuchte-Prozentwert je AMS-Unit (aus mc_print.push_info).
-  // Wird beim naechsten push_status an amsHumidity[].humidity_pct angehaengt.
+  private connectedAt = 0;
+  private gotDataSinceConnect = false;
+  private warnedNoData = false;
+  private lastPushallAt = 0;
+  // Identity of the current/last job (see jobIdentity) and its gcode_state, for detecting
+  // a new print by its id rather than by a status edge.
+  private jobKey: string | null = null;
+  private lastGcodeState: string | undefined;
+  private stopRequested = false; // we sent "stop" for the current job
   // Job whose print file was already fetched (weights + preview); also covers jobs that
   // were running when the bridge started, not only new ones.
   private fetchedJobKey: string | null = null;
@@ -318,9 +340,11 @@ export class BambuAdapter implements Adapter {
     this.accessCode = accessCode;
     this.printerId = printerId;
     this.opts = opts;
+    this.t = { ...BAMBU_TIMINGS, ...opts.timings };
+    this.reconnectDelayMs = this.t.reconnectMinMs;
     if (opts.autoConnect === false) return;
     this.connect();
-    this.watchdog = setInterval(() => this.checkDataSilence(), WATCHDOG_TICK_MS);
+    this.watchdog = setInterval(() => this.onWatchdogTick(), this.t.watchdogTickMs);
   }
 
   /** Adapter vollständig stoppen (Config-Änderung/Löschen) — sonst reconnectet der
@@ -337,15 +361,19 @@ export class BambuAdapter implements Adapter {
    *  Verbindungen blockieren am A1/P1 den lokalen MQTT-Slot. */
   private teardownClient(): void {
     if (!this.client) return;
-    this.client.removeAllListeners();
-    try { this.client.end(true); } catch { /* ignore */ }
+    const old = this.client;
     this.client = null;
+    old.removeAllListeners();
+    // An 'error' emitted after this point (e.g. by the socket while closing) would be
+    // unhandled and crash the process.
+    old.on('error', () => { /* old session, ignore */ });
+    try { old.end(true); } catch { /* ignore */ }
   }
 
   private scheduleReconnect(): void {
     if (this.disposed || this.reconnectTimer) return;
     const delay = this.reconnectDelayMs;
-    this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, RECONNECT_MAX_MS);
+    this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.t.reconnectMaxMs);
     console.log(`[bambu] Reconnect in ${delay / 1000}s`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -353,23 +381,63 @@ export class BambuAdapter implements Adapter {
     }, delay);
   }
 
-  private checkDataSilence(): void {
-    if (this.disposed || !this.connected || this.lastMessageAt === 0) return;
-    const silentMs = Date.now() - this.lastMessageAt;
-    if (silentMs < DATA_SILENCE_MS) return;
-    const min = Math.round(silentMs / 60_000);
-    console.warn(`[bambu] ${min} min keine Daten trotz Verbindung — Neuaufbau`);
+  private isPreparing(): boolean {
+    const gs = typeof this.state.gcode_state === 'string' ? this.state.gcode_state.toUpperCase() : '';
+    return gs === 'PREPARE' || gs === 'SLICING';
+  }
+
+  private onWatchdogTick(): void {
+    if (this.disposed || !this.connected) return;
+    const now = Date.now();
+    if (!this.gotDataSinceConnect && !this.warnedNoData && now - this.connectedAt >= this.t.noDataWarnMs) {
+      this.warnedNoData = true;
+      const s = Math.round((now - this.connectedAt) / 1000);
+      console.warn(`[bambu] Connected to ${this.ip} but no data for ${s}s — check the serial number (topic device/${this.serial}/report, case-sensitive)`);
+      addEvent(this.printerId, 'warn',
+        `Verbunden, aber ${s} s keine Druckerdaten — Seriennummer prüfen (Groß-/Kleinschreibung): ${this.serial}`);
+    }
+    if (this.checkDataSilence(now)) return;
+    if (now - this.lastPushallAt >= this.t.pushallIntervalMs) this.requestPushall();
+  }
+
+  /** Rebuilds a session that is connected but silent. Returns true if it did. */
+  private checkDataSilence(now: number): boolean {
+    if (this.lastMessageAt === 0) return false;
+    const silentMs = now - this.lastMessageAt;
+    const limit = this.isPreparing() ? this.t.prepareSilenceMs : this.t.silenceMs;
+    if (silentMs < limit) return false;
+    const s = Math.round(silentMs / 1000);
+    console.warn(`[bambu] ${s}s keine Daten trotz Verbindung — Neuaufbau`);
     addEvent(this.printerId, 'warn',
-      `${min} min keine Druckerdaten trotz Verbindung — Neuaufbau. (Evtl. hat ein anderes Gerät die Drucker-Verbindung übernommen, z. B. Bambu Handy/Studio)`);
-    this.connected = false;
-    this.snapshot = { ...this.snapshot, status: 'offline' };
+      `${s} s keine Druckerdaten trotz Verbindung — Neuaufbau. (Evtl. hat ein anderes Gerät die Drucker-Verbindung übernommen, z. B. Bambu Handy/Studio)`);
+    this.markOffline();
     this.connect();
+    return true;
+  }
+
+  /** Connection lost: keep the last known state and job, only the status changes. */
+  private markOffline(): void {
+    this.connected = false;
+    this.stale = true;
+    this.snapshot = { ...this.snapshot, status: 'offline', stale: true };
+  }
+
+  private publish(payload: object, what: string): void {
+    this.client?.publish(`device/${this.serial}/request`, JSON.stringify(payload), { qos: 0 },
+      (err) => { if (err) console.error(`[bambu] ${what} error:`, err.message); });
+  }
+
+  /** Asks the printer for a full state report. */
+  private requestPushall(): void {
+    if (!this.client || !this.connected) return;
+    this.lastPushallAt = Date.now();
+    this.publish({ pushing: { command: 'pushall', sequence_id: '0' } }, 'pushall');
   }
 
   private connect(): void {
     if (this.disposed) return;
     this.teardownClient();
-    this.client = mqtt.connect(this.opts.brokerUrl ?? `mqtts://${this.ip}:8883`, {
+    const client = mqtt.connect(this.opts.brokerUrl ?? `mqtts://${this.ip}:8883`, {
       username: 'bblp',
       password: this.accessCode,
       rejectUnauthorized: false,
@@ -377,38 +445,33 @@ export class BambuAdapter implements Adapter {
       connectTimeout: 15_000,
       keepalive: 30,            // tote Verbindungen schneller erkennen (Default 60 s)
     });
+    this.client = client;
 
-    this.client.on('connect', () => {
+    client.on('connect', () => {
       this.connected = true;
-      this.reconnectDelayMs = RECONNECT_MIN_MS;
-      this.lastMessageAt = Date.now();
-      this.snapshot = { status: 'idle' };
+      this.reconnectDelayMs = this.t.reconnectMinMs;
+      this.connectedAt = this.lastMessageAt = Date.now();
+      this.gotDataSinceConnect = false;
+      // Keep the last known state and job: a reconnect is not a new job. The snapshot is
+      // marked stale until the next full report.
+      this.stale = true;
+      const gs = typeof this.state.gcode_state === 'string' ? this.state.gcode_state : undefined;
+      this.snapshot = { ...this.snapshot, status: gs !== undefined ? mapState(gs) : this.snapshot.status, stale: true };
       console.log('[bambu] MQTT connected →', this.ip);
       addEvent(this.printerId, 'success', `Drucker verbunden: ${this.ip}`);
-      this.client!.subscribe(`device/${this.serial}/report`, err => {
+      client.subscribe(`device/${this.serial}/report`, err => {
         if (err) console.error('[bambu] Subscribe error:', err.message);
       });
-      // Ask printer for a full state push so the snapshot is current immediately
-      this.client!.publish(
-        `device/${this.serial}/request`,
-        JSON.stringify({ pushing: { command: 'pushall', sequence_id: '0' } }),
-        { qos: 0 },
-        (err) => { if (err) console.error('[bambu] pushall error:', err.message); },
-      );
+      // Full state push right away (also after every reconnect: frames may have been missed).
+      this.requestPushall();
       // Module list: tells which AMS model each unit is (AMS / AMS Lite / AMS 2 Pro / AMS HT).
-      this.client!.publish(
-        `device/${this.serial}/request`,
-        JSON.stringify({ info: { command: 'get_version', sequence_id: '0' } }),
-        { qos: 0 },
-        (err) => { if (err) console.error('[bambu] get_version error:', err.message); },
-      );
+      this.publish({ info: { command: 'get_version', sequence_id: '0' } }, 'get_version');
     });
 
-    this.client.on('message', (_topic, payload) => this.handleMessage(payload));
+    client.on('message', (_topic, payload) => this.handleMessage(payload));
 
-    this.client.on('error', err => {
-      this.connected = false;
-      this.snapshot = { ...this.snapshot, status: 'offline' };
+    client.on('error', err => {
+      this.markOffline();
       console.error('[bambu] MQTT error:', err.message);
       // "connack timeout": Drucker antwortet auf den Verbindungswunsch nicht — am A1/P1
       // typischerweise, weil der einzige lokale Slot (noch) belegt ist.
@@ -417,10 +480,9 @@ export class BambuAdapter implements Adapter {
       addEvent(this.printerId, 'warn', `MQTT-Fehler: ${err.message}${hint}`);
     });
 
-    this.client.on('close', () => {
+    client.on('close', () => {
       const wasConnected = this.connected;
-      this.connected = false;
-      this.snapshot = { ...this.snapshot, status: 'offline' };
+      this.markOffline();
       if (wasConnected) {
         // Diagnose: Abriss einer STEHENDEN Verbindung getrennt loggen — das ist das
         // Muster "anderer Client hat übernommen" bzw. WLAN-Abriss (≠ connack timeout).
@@ -434,6 +496,7 @@ export class BambuAdapter implements Adapter {
   /** One MQTT message from the report topic (public for tests: feed captured frames). */
   handleMessage(payload: Buffer | string): void {
     this.lastMessageAt = Date.now();
+    this.gotDataSinceConnect = true;
     const raw = typeof payload === 'string' ? payload : payload.toString();
     let msg: BambuReport;
     try {
@@ -473,12 +536,13 @@ export class BambuAdapter implements Adapter {
     if (typeof p.ipcam?.rtsp_url === 'string') this.cameraRtspUrl = p.ipcam.rtsp_url;
 
     const prevStatus = this.snapshot.status;
-    const prevState = this.state;
     this.state = mergePrintState(this.state, p);
     const st = this.state as BambuPrint;
     const gcodeState = typeof st.gcode_state === 'string' ? st.gcode_state : undefined;
     // No gcode_state seen yet (partial frame right after start): keep the last status.
     const newStatus = gcodeState !== undefined ? mapState(gcodeState) : prevStatus;
+    // The first report with gcode_state after a (re)connect confirms the state.
+    if (typeof p.gcode_state === 'string') this.stale = false;
 
     if (newStatus !== prevStatus) {
       console.log(`[bambu] State: ${gcodeState} → ${newStatus} (${st.mc_percent ?? '-'}%)`);
@@ -488,11 +552,21 @@ export class BambuAdapter implements Adapter {
       if (st.hms?.length) console.log('[bambu] HMS warnings:', JSON.stringify(st.hms));
     }
 
-    // Carry the job's file data forward (cleared at the start of each new print).
-    const isNewPrint = prevStatus !== 'printing' && prevStatus !== 'paused' && newStatus === 'printing';
-    // Mapping is job state: a print without its own mapping (external spool!) must not
-    // inherit the previous print's mapping, or its usage is booked to that AMS slot.
-    if (isNewPrint && !Array.isArray(p.mapping) && prevState.mapping !== undefined) delete this.state.mapping;
+    // A new print is recognised by its job id (subtask_id / job_id / task_id / file),
+    // not by a status edge: a reconnect or a partial frame must not start a new job.
+    const id = jobIdentity(st);
+    const isNewPrint = isNewJob(this.jobKey, this.lastGcodeState, id.key, gcodeState);
+    if (isActiveGcodeState(gcodeState) && id.key != null) this.jobKey = id.key;
+    if (gcodeState !== undefined) this.lastGcodeState = gcodeState;
+    if (isNewPrint) {
+      console.log(`[bambu] New job: ${id.key} (${st.subtask_name ?? '-'})`);
+      // Mapping is job state: a print without its own mapping (external spool!) must not
+      // inherit the previous print's mapping, or its usage is booked to that AMS slot.
+      if (!Array.isArray(p.mapping)) delete this.state.mapping;
+      this.fetchedJobKey = null;
+      this.stopRequested = false;
+      this.requestPushall(); // full state at print start (mapping, AMS)
+    }
     const plateM = typeof st.gcode_file === 'string' ? /plate_(\d+)\.gcode/i.exec(st.gcode_file) : null;
     if (plateM) this.plateIndex = parseInt(plateM[1], 10);
 
@@ -505,7 +579,7 @@ export class BambuAdapter implements Adapter {
 
     // Bei Druckstart (oder laufendem Druck nach Bridge-Start): Druckdatei via FTPS
     // laden und parsen — einmal je Job.
-    const jobKey = this.snapshot.printFile ? `${this.snapshot.sourceJobId ?? ''}|${this.snapshot.printFile}` : null;
+    const jobKey = this.snapshot.printFile ? this.jobKey : null;
     if (jobKey && (newStatus === 'printing' || newStatus === 'paused') && jobKey !== this.fetchedJobKey && this.opts.fetchFiles !== false) {
       this.fetchedJobKey = jobKey;
       this.fetchPrintFile(this.snapshot.printFile).catch(err =>
@@ -525,11 +599,20 @@ export class BambuAdapter implements Adapter {
     const prev = this.snapshot;
     const ams = st.ams;
     const trayNow = toInt(ams?.tray_now);
+    const layerNum = toInt(st.layer_num ?? st['3D']?.layer_num);
+    const totalLayers = toInt(st.total_layer_num ?? st['3D']?.total_layer_num);
+    const startS = toInt(st.gcode_start_time);
     return {
       status,
+      stale: this.stale,
+      jobKey: this.jobKey,
       jobResult: gcodeState !== undefined ? mapJobResult(gcodeState) : prev.jobResult,
       printFile: st.subtask_name || undefined,
-      sourceJobId: st.subtask_id || st.job_id || undefined,
+      sourceJobId: jobIdentity(st).sourceJobId,
+      layerNum,
+      totalLayers,
+      jobStartedAtS: startS != null && startS > 1_000_000_000 ? startS : undefined,
+      stopRequested: this.stopRequested,
       progressPct: num(st.mc_percent) ?? undefined,
       tempHotend: num(st.nozzle_temper) ?? undefined,
       tempBed: num(st.bed_temper) ?? undefined,
@@ -742,6 +825,7 @@ export class BambuAdapter implements Adapter {
       console.warn(`[bambu] Command ${cmd.type} rejected: ${why}`);
       throw new CommandRejectedError(why);
     }
+    if (cmd.type === 'stop') this.stopRequested = true;
     console.log(`[bambu] Command executed: ${cmd.type}`);
   }
 }
