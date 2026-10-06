@@ -10,6 +10,14 @@ import { BRIDGE_VERSION } from './version.js';
 import { startDiscovery } from './link/discovery.js';
 import { pair, startSyncLoop, syncNow, type LinkCallbacks } from './link/sync.js';
 import { createLogger, enableFileLogging, installConsoleCapture, logFileFromArgs } from './logger.js';
+import { registerHealthProvider } from './health-registry.js';
+import { outboxStats } from './outbox.js';
+
+// Job end events waiting for delivery to Flownt (persistent outbox) in /healthz.
+registerHealthProvider('outbox', () => {
+  const s = outboxStats();
+  return { pending: s.pending, oldest_age_s: s.oldestAgeS };
+});
 
 // Logging first: timestamps/levels for every console line, optional rotating log file.
 installConsoleCapture();
