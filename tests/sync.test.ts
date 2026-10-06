@@ -56,7 +56,7 @@ test('guard: time alone is not enough, and an interruption restarts the count', 
 });
 
 test('tombstones expire after 24 h and match by Flownt id or serial', () => {
-  const cfg = { version: 2 as const, language: 'en' as const, printers: [] };
+  const cfg: import('../src/config.js').MultiConfig = { version: 2, language: 'en', printers: [] };
   addTombstone(cfg, { flowntPrinterId: 'f1', adapterSerial: '00M1', adapterApiKey: 'code1' }, 0);
   addTombstone(cfg, { flowntPrinterId: 'f2', adapterApiKey: '' }, 0); // nothing to keep
   assert.equal(cfg.removedSecrets?.length, 1);
