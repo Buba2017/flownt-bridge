@@ -5,9 +5,11 @@ import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAler
 import { extractPlatePreview, parseFileBuffer } from './bambu-file-parser.js';
 import { ftpsDownload, ftpsList } from './ftps.js';
 import { addEvent } from '../events.js';
+import { isTelemetry, mergePrintState, PrintState, toInt } from './bambu-state.js';
 
 interface BambuAmsTray {
-  id?: string;
+  id?: string | number;
+  state?: number;
   tray_type?: string;
   tray_color?: string;  // Bambu sendet "0xFFAA00FF" (RRGGBBAA) oder "0xFFAA00"
   remain?: number;
@@ -22,10 +24,10 @@ interface BambuAmsTray {
 }
 
 interface BambuAmsUnit {
-  id?: string;
-  humidity?: string;     // "1"–"5" Trockenheits-Stufe (5=trocken, 1=feucht)
-  humidity_raw?: string; // echte rel. Luftfeuchte in % (z.B. "24") — genau das liest auch HA
-  temp?: string;         // "28.7" (°C, Innentemperatur der AMS-Einheit)
+  id?: string | number;
+  humidity?: string | number;     // "1"–"5" index, inverted: 5 = dry, 1 = wet
+  humidity_raw?: string | number; // relative humidity in % (AMS 2 Pro / AMS HT)
+  temp?: string | number;         // "28.7" (°C inside the unit; > 100 is ignored by the merge)
   tray?: BambuAmsTray[];
   dry_time?: number;     // remaining drying time in minutes (AMS 2 Pro / AMS HT)
   dry_setting?: { dry_temperature?: number; dry_duration?: number; dry_filament?: string };
@@ -83,10 +85,7 @@ interface BambuReport {
 }
 
 const isZeroId = (v?: string) => !v || /^0+$/.test(v);
-const unitId = (unit: BambuAmsUnit, index: number) => {
-  const id = parseInt(unit.id ?? '', 10);
-  return Number.isFinite(id) ? id : index;
-};
+const unitId = (unit: BambuAmsUnit, index: number) => toInt(unit.id) ?? index;
 const num = (v?: string | number | null) => {
   const n = typeof v === 'number' ? v : parseFloat(v ?? '');
   return Number.isFinite(n) ? n : null;
@@ -187,10 +186,9 @@ function parseAmsSlots(ams?: BambuPrint['ams']): AmsSlot[] {
   if (!ams?.ams?.length) return [];
   return ams.ams.flatMap((unit, index) =>
     (unit.tray ?? []).map((tray, position) => {
-      const slot = parseInt(tray.id ?? '', 10);
       return {
         ams_unit: unitId(unit, index),
-        slot: Number.isFinite(slot) ? slot : position,
+        slot: toInt(tray.id) ?? position,
         material: tray.tray_type ?? '',
         color: normalizeColor(tray.tray_color),
         remain: tray.remain ?? 0,
@@ -231,12 +229,13 @@ function parseAmsHumidity(ams?: BambuPrint['ams']): AmsHumidityUnit[] {
   if (!ams?.ams?.length) return [];
   return ams.ams
     .map((unit, index): AmsHumidityUnit => {
-      const pct = parseInt(unit.humidity_raw ?? '', 10);
+      const pct = toInt(unit.humidity_raw);
+      const temp = num(unit.temp);
       return {
         ams_unit: unitId(unit, index),
-        humidity: parseInt(unit.humidity ?? '0', 10),
-        temp: parseFloat(unit.temp ?? '0'),
-        humidity_pct: Number.isFinite(pct) && pct >= 0 && pct <= 100 ? pct : undefined,
+        humidity: toInt(unit.humidity) ?? 0,
+        temp: temp != null && temp <= 100 ? temp : 0,
+        humidity_pct: pct != null && pct >= 0 && pct <= 100 ? pct : undefined,
       };
     })
     .filter(u => u.humidity > 0);
@@ -297,6 +296,8 @@ export class BambuAdapter implements Adapter {
   private connected = false;
   private pendingCommands = new Map<string, (result?: string, reason?: string) => void>();
   private snapshot: PrinterSnapshot = { status: 'offline' };
+  // Merged push_status state (see bambu-state.ts); the snapshot is derived from it.
+  private state: PrintState = {};
   private client: mqtt.MqttClient | null = null;
   private reconnectDelayMs = RECONNECT_MIN_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -433,112 +434,117 @@ export class BambuAdapter implements Adapter {
   /** One MQTT message from the report topic (public for tests: feed captured frames). */
   handleMessage(payload: Buffer | string): void {
     this.lastMessageAt = Date.now();
+    const raw = typeof payload === 'string' ? payload : payload.toString();
+    let msg: BambuReport;
     try {
-      const raw = typeof payload === 'string' ? payload : payload.toString();
-      const msg = JSON.parse(raw) as BambuReport;
-      if (msg.info?.command === 'get_version' && Array.isArray(msg.info.module)) {
-        const models = new Map<number, AmsUnitInfo['model']>();
-        for (const m of msg.info.module) {
-          const hit = AMS_MODULE_PREFIX.find(([prefix]) => m.name?.startsWith(prefix));
-          const id = hit ? parseInt(m.name!.slice(hit[0].length), 10) : NaN;
-          if (hit && Number.isFinite(id)) models.set(id, hit[1]);
-        }
-        this.amsModels = models;
-        if (models.size) console.log('[bambu] AMS-Module:', [...models].map(([id, m]) => `${id}=${m}`).join(' '));
-        return;
-      }
-      const p = msg.print;
-      if (!p) return;
-      if (typeof p.ipcam?.rtsp_url === 'string') this.cameraRtspUrl = p.ipcam.rtsp_url;
-
-      // push_status = periodic full-state push (gcode_state may be "" when printer is idle)
-      const isPushStatus = p.command === 'push_status';
-
-      // Reply to a command we sent (matched by sequence_id).
-      const pending = p.sequence_id ? this.pendingCommands.get(p.sequence_id) : undefined;
-      if (pending && !isPushStatus) {
-        this.pendingCommands.delete(p.sequence_id!);
-        pending(p.result, p.reason);
-      }
-
-      if (!isPushStatus) {
-        // All command responses — log regardless of whether gcode_state is present
-        console.log('[bambu] Printer response:', raw.slice(0, 800));
-        if (!p.gcode_state) return; // no state to update
-      }
-
-      // Treat empty gcode_state as IDLE (happens during idle push_status)
-      const gcodeState = p.gcode_state || 'IDLE';
-      const prevStatus = this.snapshot.status;
-      const newStatus = mapState(gcodeState);
-
-      if (newStatus !== prevStatus) {
-        console.log(`[bambu] State: ${gcodeState} → ${newStatus} (${p.mc_percent ?? '-'}%)`);
-        if (gcodeState === 'FAILED' || gcodeState === 'RUNNING') {
-          console.log('[bambu] Full status:', raw.slice(0, 20000));
-        }
-        if (p.hms?.length) {
-          console.log('[bambu] HMS warnings:', JSON.stringify(p.hms));
-        }
-      }
-
-      const trayNow = typeof p.ams?.tray_now === 'string'
-        ? parseInt(p.ams.tray_now, 10)
-        : p.ams?.tray_now;
-      const amsSlots = parseAmsSlots(p.ams);
-      const amsHumidity = parseAmsHumidity(p.ams);
-      const amsUnits = parseAmsUnits(p.ams, this.amsModels);
-      const humSig = amsHumidity.map(u => `${u.ams_unit}:${u.humidity}/5${u.humidity_pct != null ? `/${u.humidity_pct}%` : ''}`).join(' ');
-      if (humSig && humSig !== this.lastHumSig) {
-        this.lastHumSig = humSig;
-        console.log('[bambu] AMS Feuchte:', humSig);
-      }
-
-      // Carry parsedFilamentWeights forward (cleared at start of each new print)
-      const isNewPrint = prevStatus !== 'printing' && prevStatus !== 'paused' && newStatus === 'printing';
-      const parsedFilamentWeights = isNewPrint ? null : this.snapshot.parsedFilamentWeights;
-      const plateM = typeof p.gcode_file === 'string' ? /plate_(\d+)\.gcode/i.exec(p.gcode_file) : null;
-      if (plateM) this.plateIndex = parseInt(plateM[1], 10);
-
-      this.snapshot = {
-        status: newStatus,
-        jobResult: mapJobResult(gcodeState),
-        printFile: p.subtask_name || undefined,
-        sourceJobId: p.subtask_id || p.job_id || undefined,
-        progressPct: p.mc_percent,
-        tempHotend: p.nozzle_temper,
-        tempBed: p.bed_temper,
-        etaSec: p.mc_remaining_time != null ? p.mc_remaining_time * 60 : undefined,
-        amsSlots: amsSlots.length > 0 ? amsSlots : this.snapshot.amsSlots,
-        // Sticky: Bambu sendet Teil-Updates — tray_now fehlt in den meisten Deltas.
-        // Ohne Carry-forward fiele der aktive Slot (auch 254 = externe Spule) in der
-        // Anzeige ständig auf „unbekannt" zurück.
-        activeMqttSlot: activeTrayFromExtruder(p.device) ?? trayNow ?? this.snapshot.activeMqttSlot,
-        jobState: mapJobState(gcodeState),
-        hms: Array.isArray(p.hms) ? parseHms(p.hms) : this.snapshot.hms,
-        printError: typeof p.print_error === 'number' ? formatPrintError(p.print_error) : this.snapshot.printError,
-        amsHumidity: amsHumidity.length > 0 ? amsHumidity : this.snapshot.amsHumidity,
-        amsUnits: amsUnits.length > 0 ? amsUnits : this.snapshot.amsUnits,
-        // Mapping ist JOB-Zustand: bei neuem Druck verwerfen (wie parsedFilamentWeights).
-        // Sonst erbt ein Druck OHNE eigenes Mapping (externe Spule!) das Mapping des
-        // Vordrucks und der Verbrauch wird dessen AMS-Slot zugeordnet (Bug Test 3).
-        filamentMapping: (Array.isArray(p.mapping) && p.mapping.length > 0) ? p.mapping : (isNewPrint ? undefined : this.snapshot.filamentMapping),
-        parsedFilamentWeights,
-        printPreview: isNewPrint ? null : this.snapshot.printPreview,
-      };
-
-      // Bei Druckstart (oder laufendem Druck nach Bridge-Start): Druckdatei via FTPS
-      // laden und parsen — einmal je Job.
-      const jobKey = this.snapshot.printFile ? `${this.snapshot.sourceJobId ?? ''}|${this.snapshot.printFile}` : null;
-      if (jobKey && (newStatus === 'printing' || newStatus === 'paused') && jobKey !== this.fetchedJobKey && this.opts.fetchFiles !== false) {
-        this.fetchedJobKey = jobKey;
-        this.fetchPrintFile(this.snapshot.printFile).catch(err =>
-          console.error('[bambu] fetchPrintFile:', err),
-        );
-      }
+      msg = JSON.parse(raw) as BambuReport;
     } catch {
-      // ignore malformed messages
+      return; // ignore malformed messages
     }
+    if (msg.info?.command === 'get_version' && Array.isArray(msg.info.module)) {
+      const models = new Map<number, AmsUnitInfo['model']>();
+      for (const m of msg.info.module) {
+        const hit = AMS_MODULE_PREFIX.find(([prefix]) => m.name?.startsWith(prefix));
+        const id = hit ? parseInt(m.name!.slice(hit[0].length), 10) : NaN;
+        if (hit && Number.isFinite(id)) models.set(id, hit[1]);
+      }
+      this.amsModels = models;
+      if (models.size) console.log('[bambu] AMS-Module:', [...models].map(([id, m]) => `${id}=${m}`).join(' '));
+      this.snapshot = { ...this.snapshot, amsUnits: this.deriveAmsUnits() };
+      return;
+    }
+    const p = msg.print;
+    if (!p || typeof p !== 'object') return;
+
+    // Reply to a command we sent (matched by sequence_id).
+    const seq = p.sequence_id != null ? String(p.sequence_id) : undefined;
+    const pending = seq ? this.pendingCommands.get(seq) : undefined;
+    const isOwnReply = !!pending && (p.command !== 'push_status' || p.result != null || p.reason != null);
+    if (pending && isOwnReply) {
+      this.pendingCommands.delete(seq!);
+      pending(p.result, p.reason);
+    }
+    if (!isTelemetry(p, isOwnReply)) {
+      // Command replies and commands of other clients echoed by the printer: they carry
+      // command fields (gcode_state of the command, param, …), not printer state.
+      console.log('[bambu] Printer response:', raw.slice(0, 800));
+      return;
+    }
+    if (typeof p.ipcam?.rtsp_url === 'string') this.cameraRtspUrl = p.ipcam.rtsp_url;
+
+    const prevStatus = this.snapshot.status;
+    const prevState = this.state;
+    this.state = mergePrintState(this.state, p);
+    const st = this.state as BambuPrint;
+    const gcodeState = typeof st.gcode_state === 'string' ? st.gcode_state : undefined;
+    // No gcode_state seen yet (partial frame right after start): keep the last status.
+    const newStatus = gcodeState !== undefined ? mapState(gcodeState) : prevStatus;
+
+    if (newStatus !== prevStatus) {
+      console.log(`[bambu] State: ${gcodeState} → ${newStatus} (${st.mc_percent ?? '-'}%)`);
+      if (gcodeState === 'FAILED' || gcodeState === 'RUNNING') {
+        console.log('[bambu] Full status:', JSON.stringify(st).slice(0, 60_000));
+      }
+      if (st.hms?.length) console.log('[bambu] HMS warnings:', JSON.stringify(st.hms));
+    }
+
+    // Carry the job's file data forward (cleared at the start of each new print).
+    const isNewPrint = prevStatus !== 'printing' && prevStatus !== 'paused' && newStatus === 'printing';
+    // Mapping is job state: a print without its own mapping (external spool!) must not
+    // inherit the previous print's mapping, or its usage is booked to that AMS slot.
+    if (isNewPrint && !Array.isArray(p.mapping) && prevState.mapping !== undefined) delete this.state.mapping;
+    const plateM = typeof st.gcode_file === 'string' ? /plate_(\d+)\.gcode/i.exec(st.gcode_file) : null;
+    if (plateM) this.plateIndex = parseInt(plateM[1], 10);
+
+    this.snapshot = this.deriveSnapshot(newStatus, gcodeState, isNewPrint);
+    const humSig = (this.snapshot.amsHumidity ?? []).map(u => `${u.ams_unit}:${u.humidity}/5${u.humidity_pct != null ? `/${u.humidity_pct}%` : ''}`).join(' ');
+    if (humSig && humSig !== this.lastHumSig) {
+      this.lastHumSig = humSig;
+      console.log('[bambu] AMS Feuchte:', humSig);
+    }
+
+    // Bei Druckstart (oder laufendem Druck nach Bridge-Start): Druckdatei via FTPS
+    // laden und parsen — einmal je Job.
+    const jobKey = this.snapshot.printFile ? `${this.snapshot.sourceJobId ?? ''}|${this.snapshot.printFile}` : null;
+    if (jobKey && (newStatus === 'printing' || newStatus === 'paused') && jobKey !== this.fetchedJobKey && this.opts.fetchFiles !== false) {
+      this.fetchedJobKey = jobKey;
+      this.fetchPrintFile(this.snapshot.printFile).catch(err =>
+        console.error('[bambu] fetchPrintFile:', err),
+      );
+    }
+  }
+
+  private deriveAmsUnits(): AmsUnitInfo[] | undefined {
+    const ams = (this.state as BambuPrint).ams;
+    return ams?.ams ? parseAmsUnits(ams, this.amsModels) : this.snapshot.amsUnits;
+  }
+
+  /** Snapshot from the merged printer state (never from a single frame). */
+  private deriveSnapshot(status: PrinterStatus, gcodeState: string | undefined, isNewPrint: boolean): PrinterSnapshot {
+    const st = this.state as BambuPrint;
+    const prev = this.snapshot;
+    const ams = st.ams;
+    const trayNow = toInt(ams?.tray_now);
+    return {
+      status,
+      jobResult: gcodeState !== undefined ? mapJobResult(gcodeState) : prev.jobResult,
+      printFile: st.subtask_name || undefined,
+      sourceJobId: st.subtask_id || st.job_id || undefined,
+      progressPct: num(st.mc_percent) ?? undefined,
+      tempHotend: num(st.nozzle_temper) ?? undefined,
+      tempBed: num(st.bed_temper) ?? undefined,
+      etaSec: num(st.mc_remaining_time) != null ? num(st.mc_remaining_time)! * 60 : undefined,
+      amsSlots: ams?.ams ? parseAmsSlots(ams) : undefined,
+      activeMqttSlot: activeTrayFromExtruder(st.device) ?? trayNow,
+      jobState: gcodeState !== undefined ? mapJobState(gcodeState) : prev.jobState,
+      hms: Array.isArray(st.hms) ? parseHms(st.hms) : undefined,
+      printError: typeof st.print_error === 'number' ? formatPrintError(st.print_error) : undefined,
+      amsHumidity: ams?.ams ? parseAmsHumidity(ams) : undefined,
+      amsUnits: ams?.ams ? parseAmsUnits(ams, this.amsModels) : undefined,
+      filamentMapping: Array.isArray(st.mapping) && st.mapping.length > 0 ? st.mapping : undefined,
+      parsedFilamentWeights: isNewPrint ? null : prev.parsedFilamentWeights,
+      printPreview: isNewPrint ? null : prev.printPreview,
+    };
   }
 
   /** Plate thumbnail of the job's .3mf, tied to the print file it belongs to. */
