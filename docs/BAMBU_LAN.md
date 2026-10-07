@@ -91,6 +91,10 @@ Befehle müssen immer den Drucker benennen. `/printer/command` nimmt `printerId`
     dort ab, wenn beim Senden nicht die SD-Karte als Ziel gewählt wird. Solche Aufträge sind
     über FTPS nicht lesbar, also gibt es dafür keine Plattenvorschau und keine Gewichte aus dem
     Slicer. Auch Nachdrucke am Druckerdisplay laufen aus dem internen Speicher.
+  - Der Drucker meldet beim Start die Quelle (`project_file`, `url`). `file:///userdata/…` oder
+    `file:///data/…` heißt nicht zwingend, dass die Datei fehlt: Der X1C meldet Nachdrucke mit
+    `file:///data/…`, die Datei liegt aber weiter in `/cache` auf der SD-Karte. Die Bridge sucht
+    deshalb immer einmal auf der Karte.
   - Die Bridge fragt in diesem Fall den Bambu-Cloud-Auftragsverlauf ab
     (`GET /v1/user-service/my/tasks?deviceId=<Seriennummer>`, `amsDetailMapping[]` mit Gramm je
     Tray), sonst schätzt sie aus dem Rückgang der RFID-Restmenge (`remain`) zwischen Druckbeginn
