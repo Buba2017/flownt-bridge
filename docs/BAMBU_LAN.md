@@ -1,113 +1,113 @@
-# Bambu Lab printers over LAN — what the bridge relies on
+# Bambu-Lab-Drucker im LAN – worauf sich die Bridge stützt
 
-Notes on the parts of the Bambu LAN protocol the bridge uses, with the model and firmware
-quirks we ran into. Verified against X1C, X2D and H2C printers (firmware as of 2026-10).
-Some facts were cross-checked with the open-source project
-[bambuddy](https://github.com/maziggy/bambuddy). It is AGPL-3.0: we take protocol
-knowledge from it, never code.
+Notizen zu den Teilen des Bambu-LAN-Protokolls, die die Bridge nutzt, mit den Eigenheiten von
+Modellen und Firmware, auf die wir gestoßen sind. Geprüft an X1C-, X2D- und H2C-Druckern
+(Firmware-Stand 2026-10). Einige Fakten wurden mit dem Projekt
+[bambuddy](https://github.com/maziggy/bambuddy) abgeglichen. Es steht unter AGPL-3.0: Wir
+übernehmen daraus Wissen über das Protokoll, niemals Code.
 
-## Connections
+## Verbindungen
 
-| What | Port | Notes |
+| Was | Port | Hinweise |
 |---|---|---|
-| MQTT (status, commands) | 8883, TLS | user `bblp`, password = LAN access code; reports on `device/<serial>/report`, requests on `device/<serial>/request` |
-| FTPS (print files) | 990, implicit TLS | user `bblp`, password = access code; see below |
-| Camera X1/X2/H2/P2 | 322, RTSPS | needs "LAN Only Liveview" enabled on the printer, otherwise `ipcam.rtsp_url = "disable"` |
-| Camera A1/P1 | 6000, TLS JPEG | |
-| Discovery (SSDP) | UDP 2021/1990 | printers announce serial, model code, name and IP; never the access code |
+| MQTT (Status, Befehle) | 8883, TLS | Benutzer `bblp`, Passwort = LAN-Access-Code; Meldungen auf `device/<serial>/report`, Anfragen auf `device/<serial>/request` |
+| FTPS (Druckdateien) | 990, implizites TLS | Benutzer `bblp`, Passwort = Access Code; siehe unten |
+| Kamera X1/X2/H2/P2 | 322, RTSPS | „LAN Only Liveview“ muss am Drucker eingeschaltet sein, sonst `ipcam.rtsp_url = "disable"` |
+| Kamera A1/P1 | 6000, TLS-JPEG | |
+| Erkennung (SSDP) | UDP 2021/1990 | Drucker melden Seriennummer, Modellcode, Name und IP; nie den Access Code |
 
-## Control commands need Developer Mode
+## Steuerbefehle brauchen den Developer Mode
 
-Since the 2025 "authorization" firmware, printers in normal (cloud) mode reject or ignore
-control commands sent over LAN MQTT: pause, resume, stop, starting a print, temperature
-and AMS control. They only work with **LAN-only mode + Developer Mode** enabled on the
-printer, which turns off Bambu Cloud and Bambu Handy for that printer. A rejection shows
-up as a command reply with `result != "success"`, no reply at all, or HMS
-`0500_0500_0001_0007` ("MQTT command verification failed"). The bridge reports this as
-`command_rejected` (HTTP 409 on `/printer/command`). Reading status, AMS data, files and
-the camera works in all modes.
+Seit der „Autorisierungs“-Firmware von 2025 lehnen Drucker im normalen (Cloud-)Modus
+Steuerbefehle über LAN-MQTT ab oder ignorieren sie: Pause, Fortsetzen, Stopp, Druckstart,
+Temperatur- und AMS-Steuerung. Sie funktionieren nur mit **LAN-only-Modus + Developer Mode** am
+Drucker; damit sind Bambu Cloud und Bambu Handy für diesen Drucker abgeschaltet. Eine Ablehnung
+zeigt sich als Befehlsantwort mit `result != "success"`, als fehlende Antwort oder als HMS
+`0500_0500_0001_0007` („MQTT command verification failed“). Die Bridge meldet das als
+`command_rejected` (HTTP 409 auf `/printer/command`). Status, AMS-Daten, Dateien und Kamera
+funktionieren in allen Modi.
 
-Commands must always name the printer. `/printer/command` takes `printerId` (local) or
-`flowntPrinterId`; without either it only acts when exactly one printer is connected.
+Befehle müssen immer den Drucker benennen. `/printer/command` nimmt `printerId` (lokal) oder
+`flowntPrinterId`; ohne beides wirkt der Befehl nur, wenn genau ein Drucker verbunden ist.
 
-## Print state (`print.gcode_state`)
+## Druckzustand (`print.gcode_state`)
 
-| gcode_state | Flownt status | job_state | Meaning |
+| gcode_state | Flownt-Status | job_state | Bedeutung |
 |---|---|---|---|
-| `IDLE`, `""` | idle | idle | nothing running |
-| `PREPARE`, `SLICING` | printing | preparing | heating, levelling, calibration — the printer is busy |
+| `IDLE`, `""` | idle | idle | nichts läuft |
+| `PREPARE`, `SLICING` | printing | preparing | Aufheizen, Leveln, Kalibrieren – der Drucker ist belegt |
 | `RUNNING` | printing | printing | |
 | `PAUSE` | paused | paused | |
-| `FINISH` | idle | finished | job done; the plate is still full |
-| `FAILED` | error | failed | failed or stopped (the firmware reports a manual stop as FAILED) |
+| `FINISH` | idle | finished | Auftrag fertig; die Druckplatte ist noch belegt |
+| `FAILED` | error | failed | fehlgeschlagen oder gestoppt (die Firmware meldet einen manuellen Stopp als FAILED) |
 
-- A job can fail during `PREPARE` without ever reaching `RUNNING`; it must still end as a
-  failed job. That's why `PREPARE` counts as printing.
-- `print_error` is a 32-bit value shown as `MMMM_EEEE`. Low words below `0x4000` are
-  status values, not errors.
-- **HMS** (`print.hms`, list of `{attr, code}`): the code shown on the printer is
-  `attr` (hi/lo 16 bit) + `code` (hi/lo 16 bit) as hex, `XXXX_XXXX_XXXX_XXXX`. Severity is
-  `code >> 16`: 1 fatal, 2 serious, 3 common, 4 info. Explanation:
-  `https://e.bambulab.com/index.php?e=<code without _>&s=device_hms&lang=en` (redirects to
-  the Bambu wiki).
+- Ein Auftrag kann während `PREPARE` scheitern, ohne je `RUNNING` zu erreichen; er muss trotzdem
+  als fehlgeschlagener Auftrag enden. Deshalb zählt `PREPARE` als Drucken.
+- `print_error` ist ein 32-Bit-Wert, dargestellt als `MMMM_EEEE`. Untere Worte unter `0x4000`
+  sind Statuswerte, keine Fehler.
+- **HMS** (`print.hms`, Liste von `{attr, code}`): Der am Drucker angezeigte Code ist `attr`
+  (obere/untere 16 Bit) + `code` (obere/untere 16 Bit) als Hex, `XXXX_XXXX_XXXX_XXXX`. Der
+  Schweregrad ist `code >> 16`: 1 fatal, 2 schwer, 3 normal, 4 Info. Erklärung:
+  `https://e.bambulab.com/index.php?e=<Code ohne _>&s=device_hms&lang=en` (leitet ins
+  Bambu-Wiki weiter).
 
-## AMS and tray numbering
+## AMS und Slot-Nummerierung
 
-- AMS unit ids come from `ams.ams[].id` and do not have to start at 0 (an X1C with two
-  AMS reported units 1 and 2). Use the ids, never array positions.
-- Global tray number in Flownt: `unit * 4 + slot`. AMS HT units have ids 128–135 with
-  one tray each. 254 = external spool, 255 = no tray.
-- **`ams.tray_now` is not enough on dual-nozzle printers** (H2D, H2C, X2D): there it is
-  only the slot within its unit (an H2C printing from unit 1 slot 2 reported
-  `tray_now = "2"`). The reliable source on all current firmware is
-  `device.extruder.info[i].snow` = `(ams_id << 8) | slot` of the tray loaded on extruder
-  `i` (65535 = none), with the active extruder in bits 4–7 of `device.extruder.state`.
-- `print.mapping` (during a job): one entry per slicer filament (index = filament id − 1),
-  value `(ams_id << 8) | slot`; 65535 = unused or external spool.
-- `get_version` (`{"info":{"command":"get_version"}}`) lists modules; the AMS model
-  follows from the module name prefix: `ams/` AMS, `ams_f1/` AMS Lite, `n3f/` AMS 2 Pro,
+- AMS-Einheiten-IDs kommen aus `ams.ams[].id` und müssen nicht bei 0 beginnen (ein X1C mit zwei
+  AMS meldete die Einheiten 1 und 2). Immer die IDs verwenden, nie Array-Positionen.
+- Globale Slot-Nummer in Flownt: `unit * 4 + slot`. AMS-HT-Einheiten haben die IDs 128–135 mit
+  je einem Slot. 254 = externe Spule, 255 = kein Slot.
+- **`ams.tray_now` reicht bei Doppeldüsen-Druckern nicht** (H2D, H2C, X2D): Dort ist es nur der
+  Slot innerhalb seiner Einheit (ein H2C, der aus Einheit 1, Slot 2 druckte, meldete
+  `tray_now = "2"`). Die verlässliche Quelle auf allen aktuellen Firmwares ist
+  `device.extruder.info[i].snow` = `(ams_id << 8) | slot` der Spule im Extruder `i`
+  (65535 = keine), wobei der aktive Extruder in den Bits 4–7 von `device.extruder.state` steht.
+- `print.mapping` (während eines Auftrags): ein Eintrag je Slicer-Filament (Index = Filament-ID
+  − 1), Wert `(ams_id << 8) | slot`; 65535 = nicht genutzt oder externe Spule.
+- `get_version` (`{"info":{"command":"get_version"}}`) listet Module auf; das AMS-Modell ergibt
+  sich aus dem Präfix des Modulnamens: `ams/` AMS, `ams_f1/` AMS Lite, `n3f/` AMS 2 Pro,
   `n3s/` AMS HT.
-- RFID: `tray_uuid` identifies a Bambu spool (both tags of a spool share it; all zeros
-  = no tag), `tray_info_idx` is the Bambu filament code (e.g. `GFA00`, `GFB50`),
-  `tray_sub_brands` the product line, `remain` the fill level in % (−1 unknown) and
-  `tray_weight` the spool's net weight in g.
+- RFID: `tray_uuid` identifiziert eine Bambu-Spule (beide Tags einer Spule teilen sie; nur
+  Nullen = kein Tag), `tray_info_idx` ist der Bambu-Filamentcode (z. B. `GFA00`, `GFB50`),
+  `tray_sub_brands` die Produktlinie, `remain` der Füllstand in % (−1 unbekannt) und
+  `tray_weight` das Nettogewicht der Spule in g.
 
-## Print files over FTPS
+## Druckdateien über FTPS
 
-- **TLS session reuse is mandatory** on current firmware (vsftpd
-  `require_ssl_reuse`): the TLS data connection must resume the control connection's
-  session, otherwise the printer answers `522 SSL connection failed: session reuse
-  required`. basic-ftp does not satisfy this on these printers, so the bridge uses its
-  own small client (`src/adapters/ftps.ts`), capped at TLS 1.2.
-- A1 / A1 mini refuse the encrypted data channel; the client falls back to `PROT C`
-  (plain data channel, encrypted control channel) once and remembers it per printer.
-- After a connection-level failure the bridge leaves the printer's FTPS alone for 5
-  minutes (some X2D firmware answers with garbage after a failed handshake).
-- **Where the file is:** FTPS only serves the external storage (SD card / USB stick).
-  - X1/P1/A1 keep a copy of every sent job there: `/cache/<name>.gcode.3mf` or the
-    root.
-  - H2D/H2C/H2S/X2D/P2S have internal storage and keep jobs sent from Bambu Studio
-    there unless the SD card is chosen as the target when sending. Those jobs cannot be
-    read over FTPS, so there is no plate preview and no slicer weights for them; Flownt
-    falls back to the other weight sources.
-- File names: spaces may become `_`, and a `/` in the job name is stored as `2f`. The
-  bridge tries these variants and then lists `/cache`, `/` and `/model`.
-- `gcode_file` (`/data/Metadata/plate_<n>.gcode`) gives the plate being printed.
+- **TLS-Session-Reuse ist Pflicht** auf aktueller Firmware (vsftpd `require_ssl_reuse`): Die
+  TLS-Datenverbindung muss die Session der Steuerverbindung wiederaufnehmen, sonst antwortet
+  der Drucker mit `522 SSL connection failed: session reuse required`. basic-ftp erfüllt das
+  auf diesen Druckern nicht, deshalb nutzt die Bridge einen eigenen kleinen Client
+  (`src/adapters/ftps.ts`), begrenzt auf TLS 1.2.
+- A1 / A1 mini lehnen den verschlüsselten Datenkanal ab; der Client fällt einmalig auf `PROT C`
+  zurück (unverschlüsselter Datenkanal, verschlüsselter Steuerkanal) und merkt sich das je
+  Drucker.
+- Nach einem Fehler auf Verbindungsebene lässt die Bridge FTPS am Drucker 5 Minuten in Ruhe
+  (manche X2D-Firmware antwortet nach einem fehlgeschlagenen Handshake mit Unsinn).
+- **Wo die Datei liegt:** FTPS liefert nur den externen Speicher (SD-Karte / USB-Stick).
+  - X1/P1/A1 legen dort von jedem gesendeten Auftrag eine Kopie ab: `/cache/<name>.gcode.3mf`
+    oder im Hauptverzeichnis.
+  - H2D/H2C/H2S/X2D/P2S haben internen Speicher und legen aus Bambu Studio gesendete Aufträge
+    dort ab, wenn beim Senden nicht die SD-Karte als Ziel gewählt wird. Solche Aufträge sind
+    über FTPS nicht lesbar, also gibt es dafür keine Plattenvorschau und keine Gewichte aus dem
+    Slicer; Flownt greift dann auf die anderen Gewichtsquellen zurück.
+- Dateinamen: Leerzeichen können zu `_` werden, und ein `/` im Auftragsnamen wird als `2f`
+  gespeichert. Die Bridge probiert diese Varianten und listet danach `/cache`, `/` und `/model`.
+- `gcode_file` (`/data/Metadata/plate_<n>.gcode`) gibt die gedruckte Platte an.
 
-## The .3mf print file
+## Die .3mf-Druckdatei
 
-- `Metadata/slice_info.config` (XML): per `<plate>`, the `index`, `printer_model_id`
-  (e.g. `BL-P001` X1C, `O1C2` H2C, `N6` X2D), `nozzle_diameters`, `prediction` (s),
-  `weight`, and one `<filament>` per used filament with `id` (slicer filament, from 1),
-  `type`, `color`, `used_g`, `used_m`, `tray_info_idx` and on dual-nozzle printers
-  `group_id` (nozzle).
-- Files sent from Bambu Studio contain only the printed plate. A project with several
-  sliced plates lists each plate separately, so the bridge only counts the plate that is
-  being printed.
-- `Metadata/plate_<n>.png` is the plate thumbnail (512×512) used as the print preview.
+- `Metadata/slice_info.config` (XML): je `<plate>` der `index`, `printer_model_id`
+  (z. B. `BL-P001` X1C, `O1C2` H2C, `N6` X2D), `nozzle_diameters`, `prediction` (s), `weight` und
+  je genutztem Filament ein `<filament>` mit `id` (Slicer-Filament, ab 1), `type`, `color`,
+  `used_g`, `used_m`, `tray_info_idx` und bei Doppeldüsen-Druckern `group_id` (Düse).
+- Aus Bambu Studio gesendete Dateien enthalten nur die gedruckte Platte. Ein Projekt mit mehreren
+  gesliceten Platten führt jede Platte einzeln auf; die Bridge zählt deshalb nur die Platte, die
+  gerade gedruckt wird.
+- `Metadata/plate_<n>.png` ist das Vorschaubild der Platte (512×512) für die Druckvorschau.
 
-## Not implemented: starting prints from Flownt
+## Nicht umgesetzt: Druckstart aus Flownt
 
-Uploading a sliced file and starting it would need Developer Mode (see above) and, on
-dual-nozzle printers, a correct `nozzle_mapping`; a wrong mapping can level with one
-nozzle and print with the other above the bed. Not built on purpose.
+Eine geslicete Datei hochzuladen und zu starten bräuchte den Developer Mode (siehe oben) und bei
+Doppeldüsen-Druckern ein korrektes `nozzle_mapping`; eine falsche Zuordnung kann mit der einen
+Düse leveln und mit der anderen über dem Druckbett drucken. Bewusst nicht gebaut.

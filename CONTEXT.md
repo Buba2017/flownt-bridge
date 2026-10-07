@@ -74,13 +74,14 @@ Umgesetzt in 3 Stufen: **A** Vertrag typisiert · **B** `SlotRef`/`MaterialLine`
 
 ## Versionierung & Versions-Awareness
 
-**Single Source der Bridge-Version:** `src/version.ts` (`BRIDGE_VERSION`). Bei jedem Release zusammen
-mit `package.json` `"version"` anheben — und in der App `RECOMMENDED_BRIDGE_VERSION` in
+**Single Source der Bridge-Version:** `package.json` `"version"`. `src/version.ts` (`BRIDGE_VERSION`)
+liest sie beim Start aus dem Quellcode aus `package.json`; `npm run build` übernimmt sie ins Bundle.
+Bei jedem Release nur `package.json` anheben — und in der App `RECOMMENDED_BRIDGE_VERSION` in
 `src/lib/version.ts`.
 
 **Wie die Version sichtbar wird (erledigt, live ab v0.4.1):**
 - *Auf der Bridge selbst:* Footer „Flownt Bridge vX.Y.Z" auf jeder Web-UI-Seite + `GET /api/version`
-  (liefert `{version}`) + Startup-Log `[flownt-bridge] vX.Y.Z startet…`.
+  (liefert `{version, command_auth}`) + Startup-Log `[flownt-bridge] vX.Y.Z startet…`.
 - *Meldung an Flownt:* nur **Monitoring**-Instanzen senden `bridge_version` im Ingest-Body (Heartbeat/Push,
   ab v0.4.0). `bridge-ingest` schreibt es nach `printer_bridge_configs.bridge_version`. Reine
   Etikettendruck-Instanzen melden nichts (haben keine Drucker → kein Push).
