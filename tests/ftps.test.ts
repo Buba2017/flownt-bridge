@@ -139,15 +139,27 @@ test('adapter fetches the file again after a failed attempt', async () => {
   } finally { await srv.close(); }
 });
 
-test('job in internal storage (project_file url file:///userdata): no FTPS at all', async () => {
+test('job in internal storage (project_file url file:///userdata): looked for once on the card, then left alone', async () => {
   const srv = await startFakeFtps({});
   try {
-    const a = adapter(srv.port);
+    const a = adapter(srv.port, { fetchRetryMs: 10 });
     a.handleMessage(JSON.stringify({ print: { command: 'project_file', url: 'file:///userdata/project_file.gcode.3mf', subtask_name: 'Body', result: 'SUCCESS', sequence_id: '1' } }));
     a.handleMessage(running('Body'));
-    a.handleMessage(running('Body'));
-    await new Promise(r => setTimeout(r, 200));
-    assert.deepEqual(srv.commands, []);
+    await waitFor(() => srv.commands.some(c => c === 'QUIT'), 5_000, 'search done');
+    const n = srv.commands.length;
+    for (let i = 0; i < 5; i++) { a.handleMessage(running('Body')); await new Promise(r => setTimeout(r, 20)); }
+    assert.equal(srv.commands.length, n, 'no second search');
+    assert.deepEqual(await a.refetchJobWeights('Body', 1), { kind: 'internal' });
+  } finally { await srv.close(); }
+});
+
+test('X1C reprint reported in /data/: the file is still found on the card', async () => {
+  const srv = await startFakeFtps({ '/cache/Distanzspangen.gcode.3mf': threeMf });
+  try {
+    const a = adapter(srv.port);
+    a.handleMessage(JSON.stringify({ print: { command: 'project_file', url: 'file:///data/Metadata/plate_1.gcode', subtask_name: 'Distanzspangen', result: 'SUCCESS', sequence_id: '1' } }));
+    a.handleMessage(running('Distanzspangen'));
+    await waitFor(async () => (await a.getSnapshot()).parsedFilamentWeights?.length, 5_000, 'weights loaded');
   } finally { await srv.close(); }
 });
 

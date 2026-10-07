@@ -711,12 +711,9 @@ export class BambuAdapter implements Adapter {
     if (f && f.key === jobKey && (f.done || Date.now() < f.nextAt)) return;
     const state = f && f.key === jobKey ? f : { key: jobKey, attempts: 0, nextAt: 0, done: false };
     this.fetchState = state;
-    if (this.isInternalStorageJob(printFile)) {
-      state.done = true;
-      console.log(`[bambu] "${printFile}" is stored in the printer's internal storage — not reachable over FTPS, no slicer weights/preview`);
-      addEvent(this.printerId, 'info', `Druckdatei liegt im internen Speicher des Druckers — keine Slicer-Gewichte/Vorschau (${printFile})`);
-      return;
-    }
+    // A job started from the printer's own storage (file:///data/… or /userdata/…) is still
+    // looked for once on the SD card: reprints on the X1C report /data/ while the file sits
+    // in /cache on the card. Only H2C/X2D jobs sent to internal storage are really missing.
     // A pause after an earlier connection failure is not an attempt: wait it out.
     const pausedUntil = ftpsPausedUntil(this.ip);
     if (pausedUntil) { state.nextAt = pausedUntil + 1_000; return; }
@@ -741,11 +738,10 @@ export class BambuAdapter implements Adapter {
    * the print, so this recovers jobs whose fetch failed or was cut short while printing.
    */
   async refetchJobWeights(printFile: string, plateIndex: number | null): Promise<JobFileResult> {
-    if (this.isInternalStorageJob(printFile)) return { kind: 'internal' };
     if (ftpsPausedUntil(this.ip)) return { kind: 'error', message: 'FTPS paused' };
     try {
       const hit = await this.findPrintFile(printFile);
-      if (!hit) return { kind: 'missing' };
+      if (!hit) return { kind: this.isInternalStorageJob(printFile) ? 'internal' : 'missing' };
       const weights = parseFileBuffer(hit.path, hit.buf, plateIndex ?? undefined);
       return weights.length ? { kind: 'ok', weights } : { kind: 'missing' };
     } catch (err) {
@@ -778,8 +774,13 @@ export class BambuAdapter implements Adapter {
     }
     if (!hit) {
       // Typical for H2C/H2D/X2D jobs kept in internal storage: expected, reported once.
-      console.warn(`[bambu] Druckdatei nicht via FTPS abrufbar (nicht auf der SD-Karte): ${name}`);
-      addEvent(this.printerId, 'warn', `Druckdatei nicht via FTPS gefunden: ${name}`);
+      if (this.isInternalStorageJob(name)) {
+        console.log(`[bambu] "${name}" is stored in the printer's internal storage — not on the SD card, no slicer weights/preview`);
+        addEvent(this.printerId, 'info', `Druckdatei liegt im internen Speicher des Druckers — Verbrauch kommt aus dem Cloud-Auftrag bzw. der RFID-Restmenge (${name})`);
+      } else {
+        console.warn(`[bambu] Druckdatei nicht via FTPS abrufbar (nicht auf der SD-Karte): ${name}`);
+        addEvent(this.printerId, 'warn', `Druckdatei nicht via FTPS gefunden: ${name}`);
+      }
       return 'missing';
     }
     const weights = this.applyPrintFile(name, hit.path, hit.buf);

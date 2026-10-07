@@ -52,8 +52,9 @@ export interface PendingMaterial {
 }
 
 export interface Enrichment { lines: MaterialLine[]; source: string }
-/** Looks up the material of a pending job; null = nothing (yet). May update `pm`. */
-export type Enricher = (pm: PendingMaterial) => Promise<Enrichment | null>;
+/** Looks up the material of a pending job; null = nothing yet, 'exhausted' = no source left
+ *  to try (send with the fallback now). May update `pm`. */
+export type Enricher = (pm: PendingMaterial) => Promise<Enrichment | 'exhausted' | null>;
 
 export interface OutboxEntry {
   id: string;
@@ -173,24 +174,28 @@ export class Outbox {
   private async enrich(entry: OutboxEntry): Promise<boolean> {
     const pm = entry.pendingMaterial!;
     const t = this.now();
+    let exhausted = false;
     if (t < pm.until) {
       if (pm.nextAt > t) return false;
       const enricher = this.enrichers.get(entry.printerId);
-      let found: Enrichment | null = null;
+      let found: Enrichment | 'exhausted' | null = null;
       if (enricher) {
         try { found = await enricher(pm); } catch (e) { console.warn(`[outbox] [${entry.printerName}] material lookup failed:`, (e as Error).message); }
       }
-      if (found?.lines.length) {
+      if (found === 'exhausted') exhausted = true;
+      else if (found?.lines.length) {
         entry.body.filament_weights = found.lines;
         delete entry.pendingMaterial;
         addEvent(entry.printerId, 'success', `Materialverbrauch nachträglich ermittelt (${found.source}): ${entry.body.print_file ?? '–'}`);
         this.persistQuietly();
         return true;
       }
-      pm.attempts++;
-      pm.nextAt = t + Math.min(MATERIAL_RETRY_MIN_MS * 2 ** (pm.attempts - 1), MATERIAL_RETRY_MAX_MS);
-      this.persistQuietly();
-      return false;
+      if (!exhausted) {
+        pm.attempts++;
+        pm.nextAt = t + Math.min(MATERIAL_RETRY_MIN_MS * 2 ** (pm.attempts - 1), MATERIAL_RETRY_MAX_MS);
+        this.persistQuietly();
+        return false;
+      }
     }
     if (pm.fallback.length) {
       entry.body.filament_weights = pm.fallback;

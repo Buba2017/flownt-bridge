@@ -168,7 +168,9 @@ export function buildTerminalBody(
   // No slicer weights yet. The RFID remaining-% drop is the last resort; the file (still
   // on the SD card) and the cloud task history are tried first, from the outbox.
   const fallback = amsRemainLines(s.amsSlotsAtStart, jobSlots, s.amsStartProgressPct ?? 0);
-  const canRefetch = lookup.canRefetch && !s.fileInternal && !!s.printFile;
+  // Also for jobs the printer reports in its own storage: X1C reprints say /data/ while the
+  // file is still on the SD card. The enricher marks the file unreadable after one miss.
+  const canRefetch = lookup.canRefetch && !!s.printFile;
   if (canRefetch || (lookup.hasCloud && !!cfg.adapterSerial)) {
     const ids = s.jobIds ? [s.jobIds.taskId, s.jobIds.subtaskId, s.jobIds.jobId].filter((x): x is string => !!x) : [];
     return {
@@ -201,6 +203,8 @@ export function materialEnricher(
       }
     }
     const cloud = cloudFor(getCfg());
+    // File not on the card and no cloud access: nothing left to wait for.
+    if (pm.fileUnreadable && (!cloud || !pm.serial)) return 'exhausted';
     if (cloud && pm.serial) {
       const tasks = await cloud.listTasks(pm.serial);
       const task = tasks && matchCloudTask(tasks, {

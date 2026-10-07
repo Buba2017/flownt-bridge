@@ -111,6 +111,15 @@ test('outbox: after the lookup window the fallback (or material_unknown) is sent
   assert.equal(sent.find(b => b.source_job_id === 'b')?.material_unknown, true);
 });
 
+test('outbox: an exhausted lookup sends the fallback at once', async () => {
+  const dir = tempDir(), clock = new Clock(), be = new FakeBackend();
+  const ob = new Outbox(join(dir, 'outbox.json'), be.send, clock.now);
+  ob.setEnricher('p1', async () => 'exhausted');
+  ob.enqueue('p1', 'P1', body('a'), pending());
+  await ob.flush();
+  assert.equal(be.delivered()[0].material_unknown, true);
+});
+
 test('outbox: pending material survives a restart', async () => {
   const dir = tempDir(), clock = new Clock(), be = new FakeBackend();
   new Outbox(join(dir, 'outbox.json'), be.send, clock.now).enqueue('p1', 'P1', body('a'), pending());
@@ -147,8 +156,8 @@ test('terminal body defers a job without slicer weights; the enricher finds file
   const end = { session, outcome: 'completed' as const, finishedAt: T0 + 3_600_000, seen: true };
   const snap = { status: 'idle' as const };
 
-  // Internal storage, no cloud: sent right away with the RFID estimate.
-  const direct = buildTerminalBody(cfg(), snap, end, null, { canRefetch: true, hasCloud: false });
+  // Adapter without print files and no cloud: sent right away with the RFID estimate.
+  const direct = buildTerminalBody(cfg(), snap, end, null, { canRefetch: false, hasCloud: false });
   assert.equal(direct.pending, undefined);
   assert.equal(direct.body.filament_weights?.[0].grams, 150);
   assert.equal(direct.body.filament_weights?.[0].measureSource, 'ams_remain');
@@ -156,9 +165,12 @@ test('terminal body defers a job without slicer weights; the enricher finds file
   // With a cloud source: deferred, the estimate kept as fallback.
   const deferred = buildTerminalBody(cfg(), snap, end, null, { canRefetch: true, hasCloud: true });
   assert.ok(deferred.pending);
-  assert.equal(deferred.pending.fileUnreadable, true);
+  assert.equal(deferred.pending.fileUnreadable, false, 'the card is still tried once (X1C reprints report /data/)');
   assert.deepEqual(deferred.pending.jobIds, ['5538']);
   assert.equal(deferred.pending.fallback[0].grams, 150);
+
+  // No file, no cloud: the lookup is exhausted.
+  assert.equal(await materialEnricher({ getSnapshot: async () => snap }, cfg, () => null)({ ...deferred.pending, fileUnreadable: true }), 'exhausted');
 
   const cloud = { listTasks: async () => parseCloudTasks(tasksResponse) };
   const enrich = materialEnricher({ getSnapshot: async () => snap }, () => ({ ...cfg(), adapterSerial: '20P6BJ650604116' }), () => cloud);
