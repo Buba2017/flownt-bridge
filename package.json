@@ -2,6 +2,7 @@
   "name": "flownt-bridge",
   "version": "0.10.0",
   "description": "Local bridge connecting 3D printers to Flownt",
+  "license": "Elastic-2.0",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
