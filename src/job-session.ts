@@ -1,6 +1,6 @@
 import { join } from 'path';
 import { CONFIG_DIR } from './config.js';
-import type { AmsSlot, FilamentWeight, HmsAlert, PrinterSnapshot } from './adapters/types.js';
+import type { AmsSlot, FilamentWeight, HmsAlert, JobIds, PrinterSnapshot } from './adapters/types.js';
 import { isTrackedSlot } from './job-materials.js';
 import { readJson, removeFile, writeJsonAtomic } from './state-file.js';
 
@@ -33,6 +33,17 @@ export interface JobSession {
   lastActiveSlot: number | null;
   /** Last AMS state seen during the job (colour fallback, tray_uuid per slot). */
   amsSlots: AmsSlot[];
+  /** First AMS state seen during the job: with `amsSlots` it gives the RFID remaining-%
+   *  drop per slot (usage estimate when no other source exists). Absent in old sessions. */
+  amsSlotsAtStart?: AmsSlot[];
+  /** Progress when `amsSlotsAtStart` was taken (> 0 for jobs adopted mid-print). */
+  amsStartProgressPct?: number;
+  /** Raw printer job ids (cloud task matching). */
+  jobIds?: JobIds;
+  /** Printed plate (print file lookup after the job). */
+  plateIndex?: number | null;
+  /** The print file is in the printer's internal storage (never readable over FTPS). */
+  fileInternal?: boolean;
   printError: string | null;
   hms: HmsAlert[];
   stopRequested: boolean;
@@ -196,7 +207,17 @@ export class JobTracker {
       // after the start is the best estimate of the whole job.
       s.estimatedDurationMin = Math.round(snap.etaSec / 60);
     }
-    if (snap.amsSlots?.length && isActive(snap)) s.amsSlots = snap.amsSlots;
+    if (snap.amsSlots?.length && isActive(snap)) {
+      s.amsSlots = snap.amsSlots;
+      // Taken once the job really prints, so a spool swapped during PREPARE still counts.
+      if (!s.amsSlotsAtStart?.length && snap.jobState === 'printing') {
+        s.amsSlotsAtStart = snap.amsSlots;
+        s.amsStartProgressPct = snap.progressPct ?? 0;
+      }
+    }
+    if (snap.jobIds && Object.keys(snap.jobIds).length) s.jobIds = snap.jobIds;
+    if (snap.plateIndex != null) s.plateIndex = snap.plateIndex;
+    if (snap.fileInternal !== undefined) s.fileInternal = snap.fileInternal;
     if (isTrackedSlot(snap.activeMqttSlot)) s.lastActiveSlot = snap.activeMqttSlot!;
     if (snap.printError !== undefined && snap.printError !== null) s.printError = snap.printError;
     if (snap.hms) s.hms = snap.hms;

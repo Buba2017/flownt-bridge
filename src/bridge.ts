@@ -1,14 +1,19 @@
 import { PrinterConfig } from './config.js';
 import type { PrinterBridgeState } from './server.js';
-import { Adapter, PrinterSnapshot } from './adapters/types.js';
+import { Adapter, AmsSlot, FilamentWeight, PrinterSnapshot } from './adapters/types.js';
 import { CONTRACT_VERSION, EventType, IngestBody, MaterialLine } from './contract.js';
 import { BRIDGE_VERSION } from './version.js';
-import { BambuCloudClient } from './bambu-cloud.js';
 import { ShellyClient } from './smartplug/shelly.js';
 import { addEvent } from './events.js';
-import { defaultSender, getOutbox, Outbox, Sender } from './outbox.js';
+import { defaultSender, Enricher, getOutbox, Outbox, PendingMaterial, Sender } from './outbox.js';
 import { JobEnd, JobSession, JobSessionStore, JobTracker } from './job-session.js';
-import { EXTERNAL_SLOT, isTrackedSlot, ResolvedLine, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
+import { EXTERNAL_SLOT, isTrackedSlot, MaterialContext, ResolvedLine, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
+import { amsRemainLines, cloudTaskLines, matchCloudTask } from './material-sources.js';
+import { cloudSourceFor } from './cloud-sources.js';
+import type { CloudTaskSource } from './bambu-cloud.js';
+
+/** How long a job end without usage figures waits for the file / cloud lookup. */
+const MATERIAL_LOOKUP_MS = 30 * 60_000;
 
 // Last preview delivered per printer config (object identity = one fetch of one job).
 const sentPreviews = new Map<string, PrinterSnapshot['printPreview']>();
@@ -20,6 +25,10 @@ export interface BridgeDeps {
   sessions?: JobSessionStore;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Cloud task source of the printer (default: from its config, see cloud-sources.ts). */
+  cloudSource?: (cfg: PrinterConfig) => CloudTaskSource | null;
+  /** Current config of the printer (default: the one runBridge was started with). */
+  currentConfig?: () => PrinterConfig;
 }
 
 /** Fields every push carries: identity, version and the live printer state. */
@@ -79,11 +88,45 @@ export function printedFraction(s: Pick<JobSession, 'lastLayer' | 'totalLayers' 
   return null;
 }
 
+/**
+ * Material lines from slicer weights: physical slot per filament (job-materials.ts), the
+ * RFID spool seen in that slot, and for a failed/cancelled job (`fraction` set) the share
+ * printed so far.
+ */
+export function slicerLines(
+  weights: FilamentWeight[], ctx: MaterialContext, fraction: number | null,
+  note: (type: 'info' | 'warn', msg: string) => void = () => {},
+): MaterialLine[] {
+  const resolved = resolveMaterials(weights, ctx);
+  for (const n of resolved.notes) note(n.type, n.msg);
+  const trayUuid = (line: ResolvedLine): string | null => {
+    if (line.source !== 'ams' || line.filamentIndex === EXTERNAL_SLOT) return null;
+    return ctx.amsSlots.find(a => slotIndex(a.ams_unit, a.slot) === line.filamentIndex)?.tray_uuid ?? null;
+  };
+  return resolved.lines.map((l): MaterialLine => ({
+    // filamentIndex stays as the compat field the backend reads.
+    filamentIndex: l.filamentIndex,
+    grams: fraction == null ? l.grams : Math.round(l.grams * fraction * 100) / 100,
+    color: l.color,
+    filament_type: l.filamentType ?? null,
+    slotRef: { source: l.source, value: l.filamentIndex },
+    measureSource: fraction == null ? 'slicer_file' : 'estimated_partial',
+    estimated_grams: l.grams,
+    tray_uuid: trayUuid(l),
+  }));
+}
+
+export interface TerminalJob {
+  body: IngestBody;
+  /** Set when the material is still to be looked up before sending. */
+  pending?: PendingMaterial;
+}
+
 /** Terminal event body for a finished/failed job, built from its session. */
-async function buildTerminalBody(
-  cfg: PrinterConfig, snapshot: PrinterSnapshot, end: JobEnd,
-  energyWh: number | null, bambuCloud: BambuCloudClient | null,
-): Promise<IngestBody> {
+export function buildTerminalBody(
+  cfg: PrinterConfig, snapshot: PrinterSnapshot, end: JobEnd, energyWh: number | null,
+  lookup: { canRefetch: boolean; hasCloud: boolean },
+): TerminalJob {
   const s = end.session;
   const eventType: EventType = end.outcome === 'completed' ? 'job_complete' : 'job_failed';
   const body = baseBody(cfg, { ...snapshot, printFile: snapshot.printFile ?? s.printFile }, eventType);
@@ -109,52 +152,67 @@ async function buildTerminalBody(
   if (eventType === 'job_failed') body.failure_reason = failureReason(s);
 
   // AMS state as seen during the job (the live one may already belong to the next job).
-  const jobSlots = s.amsSlots.length ? s.amsSlots : snapshot.amsSlots ?? [];
-  const resolved = resolveMaterials(s.parsedFilamentWeights, {
-    mapping: s.filamentMapping, activeSlot: s.lastActiveSlot, amsSlots: jobSlots,
-  });
-  for (const n of resolved.notes) addEvent(cfg.id, n.type, n.msg);
-  // tray_uuid of the slot each line was printed from, as seen during the job.
-  const trayUuid = (line: ResolvedLine): string | null => {
-    if (line.source !== 'ams' || line.filamentIndex === EXTERNAL_SLOT) return null;
-    const slot = jobSlots.find(a => slotIndex(a.ams_unit, a.slot) === line.filamentIndex);
-    return slot?.tray_uuid ?? null;
-  };
-  if (eventType === 'job_complete') {
-    if (resolved.lines.length) {
-      // Per material line the source-abstracted slot reference; filamentIndex stays as the
-      // compat field the backend reads.
-      body.filament_weights = resolved.lines.map((l): MaterialLine => ({
-        filamentIndex: l.filamentIndex,
-        grams: l.grams,
-        color: l.color,
-        slotRef: { source: l.source, value: l.filamentIndex },
-        measureSource: 'slicer_file',
-        estimated_grams: l.grams,
-        tray_uuid: trayUuid(l),
-      }));
+  const jobSlots: AmsSlot[] = s.amsSlots.length ? s.amsSlots : snapshot.amsSlots ?? [];
+  const ctx: MaterialContext = { mapping: s.filamentMapping, activeSlot: s.lastActiveSlot, amsSlots: jobSlots };
+  // Failed / cancelled: only the part printed so far counts.
+  const fraction = eventType === 'job_failed' ? printedFraction(s) : null;
+  if (eventType === 'job_failed' && fraction === 0) return { body }; // nothing printed
+
+  if (s.parsedFilamentWeights.length) {
+    if (eventType === 'job_complete' || fraction != null) {
+      body.filament_weights = slicerLines(s.parsedFilamentWeights, ctx, fraction, (t, m) => addEvent(cfg.id, t, m));
     }
-    // Bambu cloud weight only when the print file gave nothing (its login mails a code).
-    if (!resolved.lines.length && bambuCloud && cfg.adapterSerial) {
-      const cloudWeight = await bambuCloud.getLatestTaskWeightWithRetry(cfg.adapterSerial);
-      if (cloudWeight != null) body.cloud_weight_g = cloudWeight;
-    }
-  } else {
-    // Failed / cancelled: the part printed so far, estimated from the slicer weights.
-    const fraction = printedFraction(s);
-    if (resolved.lines.length && fraction != null) {
-      body.filament_weights = resolved.lines.map((l): MaterialLine => ({
-        filamentIndex: l.filamentIndex,
-        grams: Math.round(l.grams * fraction * 100) / 100,
-        color: l.color,
-        slotRef: { source: l.source, value: l.filamentIndex },
-        measureSource: 'estimated_partial',
-        estimated_grams: l.grams,
-        tray_uuid: trayUuid(l),
-      }));
-    }
+    return { body };
   }
-  return body;
+
+  // No slicer weights yet. The RFID remaining-% drop is the last resort; the file (still
+  // on the SD card) and the cloud task history are tried first, from the outbox.
+  const fallback = amsRemainLines(s.amsSlotsAtStart, jobSlots, s.amsStartProgressPct ?? 0);
+  const canRefetch = lookup.canRefetch && !s.fileInternal && !!s.printFile;
+  if (canRefetch || (lookup.hasCloud && !!cfg.adapterSerial)) {
+    const ids = s.jobIds ? [s.jobIds.taskId, s.jobIds.subtaskId, s.jobIds.jobId].filter((x): x is string => !!x) : [];
+    return {
+      body,
+      pending: {
+        until: end.finishedAt + MATERIAL_LOOKUP_MS, nextAt: end.finishedAt, attempts: 0,
+        printFile: s.printFile, plateIndex: s.plateIndex ?? null, fileUnreadable: !canRefetch,
+        serial: cfg.adapterSerial || undefined, jobIds: ids, startedAt: s.startedAt, finishedAt: end.finishedAt,
+        fraction, mapping: s.filamentMapping, activeSlot: s.lastActiveSlot, amsSlots: jobSlots, fallback,
+      },
+    };
+  }
+  if (fallback.length) body.filament_weights = fallback;
+  else body.material_unknown = true;
+  return { body };
+}
+
+/** Material lookup for a printer's pending job ends: print file again, then the cloud. */
+export function materialEnricher(
+  adapter: Adapter, getCfg: () => PrinterConfig, cloudFor: (cfg: PrinterConfig) => CloudTaskSource | null,
+): Enricher {
+  return async (pm) => {
+    if (!pm.fileUnreadable && adapter.refetchJobWeights && pm.printFile) {
+      const r = await adapter.refetchJobWeights(pm.printFile, pm.plateIndex);
+      if (r.kind === 'ok') {
+        const lines = slicerLines(r.weights, { mapping: pm.mapping, activeSlot: pm.activeSlot, amsSlots: pm.amsSlots }, pm.fraction);
+        if (lines.length) return { lines, source: 'Druckdatei' };
+      } else if (r.kind === 'internal' || r.kind === 'missing') {
+        pm.fileUnreadable = true;
+      }
+    }
+    const cloud = cloudFor(getCfg());
+    if (cloud && pm.serial) {
+      const tasks = await cloud.listTasks(pm.serial);
+      const task = tasks && matchCloudTask(tasks, {
+        serial: pm.serial, ids: pm.jobIds, startedAt: pm.startedAt, finishedAt: pm.finishedAt, title: pm.printFile,
+      });
+      if (task) {
+        const lines = cloudTaskLines(task, pm.amsSlots, pm.fraction);
+        if (lines.length) return { lines, source: 'Bambu Cloud' };
+      }
+    }
+    return null;
+  };
 }
 
 export async function runBridge(
@@ -170,9 +228,10 @@ export async function runBridge(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   console.log(`[${cfg.name}] Verbindung wird aufgebaut…`);
 
-  const bambuCloud = (cfg.bambuCloudEmail && cfg.bambuCloudPassword)
-    ? new BambuCloudClient(cfg.bambuCloudEmail, cfg.bambuCloudPassword)
-    : null;
+  const cloudFor = deps.cloudSource ?? cloudSourceFor;
+  const getCfg = deps.currentConfig ?? (() => cfg);
+  const enricher = materialEnricher(adapter, getCfg, cloudFor);
+  outbox.setEnricher(cfg.id, enricher);
 
   const smartPlug = (cfg.smartPlugType === 'shelly' && cfg.smartPlugUrl)
     ? new ShellyClient(cfg.smartPlugUrl)
@@ -226,12 +285,16 @@ export async function runBridge(
           addEvent(cfg.id, 'info', `Druck gestartet: ${started.printFile ?? '–'}`);
         }
         if (!ended) break;
-        const body = await buildTerminalBody(cfg, snapshot, ended, lastEnergyWh, bambuCloud);
-        outbox.enqueue(cfg.id, cfg.name, body);
+        const { body, pending } = buildTerminalBody(cfg, snapshot, ended, lastEnergyWh, {
+          canRefetch: typeof adapter.refetchJobWeights === 'function', hasCloud: cloudFor(getCfg()) != null,
+        });
+        outbox.enqueue(cfg.id, cfg.name, body, pending);
         tracker.endJob();
+        if (pending) addEvent(cfg.id, 'info', `Materialverbrauch wird ermittelt (Druckdatei / Bambu Cloud): ${body.print_file ?? '–'}`);
         if (body.event_type === 'job_failed') {
-          addEvent(cfg.id, 'warn', `Druck ${ended.outcome === 'cancelled' ? 'abgebrochen' : 'fehlgeschlagen'} — kein Materialabzug`);
-          console.log(`[${cfg.name}] Job ${ended.outcome} → Abbruch-Log (${body.duration_min ?? '?'} min, kein Abzug)`);
+          const partial = body.filament_weights?.length ? 'Teilverbrauch gebucht' : 'kein Materialabzug';
+          addEvent(cfg.id, 'warn', `Druck ${ended.outcome === 'cancelled' ? 'abgebrochen' : 'fehlgeschlagen'} — ${partial}`);
+          console.log(`[${cfg.name}] Job ${ended.outcome} → Abbruch-Log (${body.duration_min ?? '?'} min, ${partial})`);
         } else {
           console.log(`[${cfg.name}] Job abgeschlossen → Drucklog-Eintrag (${body.duration_min ?? '?'} min)`);
         }
@@ -271,4 +334,5 @@ export async function runBridge(
       if (amsSig !== undefined && adapter.amsSignature?.() !== amsSig) break;
     }
   }
+  outbox.clearEnricher(cfg.id, enricher);
 }

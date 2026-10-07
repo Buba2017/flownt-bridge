@@ -26,7 +26,7 @@ function parseBgcode(buffer: Buffer): FilamentWeight[] {
   const m = text.match(/filament used \[g\]\s*=\s*([\d.]+(?:\s*,\s*[\d.]+)*)/i);
   if (!m) return [];
   return m[1].split(',')
-    .map((s, i) => ({ filamentIndex: i, grams: round2(parseFloat(s.trim())) }))
+    .map((s, i) => ({ filamentIndex: i, slicerOrder: i, grams: round2(parseFloat(s.trim())) }))
     .filter(fw => !isNaN(fw.grams) && fw.grams > 0);
 }
 
@@ -96,11 +96,15 @@ function parse3mf(buffer: Buffer, plate?: number): FilamentWeight[] {
       const idM = attrs.match(/\bid="(\d+)"/i);
       const gM = attrs.match(/used_g="([\d.]+)"/i);
       const colorM = attrs.match(/\bcolor="(#?[0-9a-fA-F]{6,8})"/i);
+      const typeM = attrs.match(/\btype="([^"]{1,40})"/i);
       const g = gM ? round2(parseFloat(gM[1])) : 0;
       if (g > 0 && idM) {
         // filamentIndex hier = Slicer-Reihenfolge (NICHT der physische AMS-Slot!).
         // Die physische Zuordnung passiert in bridge.ts per Farbe gegen den AMS-Live-Status.
-        weights.push({ filamentIndex: parseInt(idM[1], 10), grams: g, color: colorM ? colorM[1] : undefined });
+        const id = parseInt(idM[1], 10);
+        const fw: FilamentWeight = { filamentIndex: id, grams: g, color: colorM ? colorM[1] : undefined, slicerOrder: Math.max(0, id - 1) };
+        if (typeM) fw.filamentType = typeM[1];
+        weights.push(fw);
       }
     }
     if (weights.length > 0) return weights;
@@ -112,7 +116,7 @@ function parse3mf(buffer: Buffer, plate?: number): FilamentWeight[] {
     const cfg = dec.decode(prusaRaw);
     const gramsRaw = cfg.match(/filament_used_g\s*=\s*(.+)/i)?.[1] ?? '';
     const weights = gramsRaw.split(';')
-      .map((s, i) => ({ filamentIndex: i, grams: round2(parseFloat(s.trim())) }))
+      .map((s, i) => ({ filamentIndex: i, slicerOrder: i, grams: round2(parseFloat(s.trim())) }))
       .filter(fw => !isNaN(fw.grams) && fw.grams > 0);
     if (weights.length > 0) return weights;
   }
@@ -131,7 +135,7 @@ function parseGcode(text: string): FilamentWeight[] {
   const multiMatch = text.match(/;\s*filament used \[g\]\s*=\s*([\d.,\s]+)/i);
   if (multiMatch) {
     const weights = multiMatch[1].split(',')
-      .map((s, i) => ({ filamentIndex: i, grams: round2(parseFloat(s.trim())) }))
+      .map((s, i) => ({ filamentIndex: i, slicerOrder: i, grams: round2(parseFloat(s.trim())) }))
       .filter(fw => !isNaN(fw.grams) && fw.grams > 0);
     if (weights.length > 0) return weights;
   }
@@ -141,7 +145,7 @@ function parseGcode(text: string): FilamentWeight[] {
   if (prusaMultiMatch) {
     const parts = prusaMultiMatch[1].split(';');
     const weights = parts
-      .map((s, i) => ({ filamentIndex: i, grams: round2(parseFloat(s.trim())) }))
+      .map((s, i) => ({ filamentIndex: i, slicerOrder: i, grams: round2(parseFloat(s.trim())) }))
       .filter(fw => !isNaN(fw.grams) && fw.grams > 0);
     if (weights.length > 0) return weights;
   }
@@ -150,7 +154,7 @@ function parseGcode(text: string): FilamentWeight[] {
   const singleMatch = text.match(/;\s*filament used\s*=\s*([\d.]+)\s*g/i);
   if (singleMatch) {
     const g = round2(parseFloat(singleMatch[1]));
-    if (!isNaN(g) && g > 0) return [{ filamentIndex: 0, grams: g }];
+    if (!isNaN(g) && g > 0) return [{ filamentIndex: 0, slicerOrder: 0, grams: g }];
   }
 
   return [];

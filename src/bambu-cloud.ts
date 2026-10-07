@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { parseCloudTasks, type CloudTask } from './material-sources.js';
 
 const BASE_URL = 'https://api.bambulab.com/v1/user-service';
 
@@ -10,23 +11,103 @@ const HEADERS = {
 
 interface LoginResponse {
   accessToken?: string;
+  refreshToken?: string;
+  expiresIn?: number;
   loginType?: string;
   message?: string;
 }
 
-interface Task {
-  deviceId?: string;
-  weight?: number;
-  status?: number;
-  costTime?: number;
+/** Bambu Cloud session as delivered by Flownt (bridge secret `bambu_cloud_token`). */
+export interface CloudToken {
+  accessToken: string;
+  refreshToken?: string;
+  /** Epoch ms; unknown when absent. */
+  expiresAt?: number;
 }
 
-interface TasksResponse {
-  hits?: Task[];
-  total?: number;
+/** Reads the print task history of a printer from the Bambu Cloud. */
+export interface CloudTaskSource {
+  /** Recent tasks of this printer; null when the cloud cannot be reached or rejects us. */
+  listTasks(serial: string): Promise<CloudTask[] | null>;
 }
 
-export class BambuCloudClient {
+async function fetchTasks(token: string, serial: string): Promise<{ status: number; tasks: CloudTask[] }> {
+  const url = `${BASE_URL}/my/tasks?deviceId=${encodeURIComponent(serial)}&limit=20`;
+  const res = await fetch(url, {
+    headers: { ...HEADERS, Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) return { status: res.status, tasks: [] };
+  return { status: res.status, tasks: parseCloudTasks(await res.json()) };
+}
+
+/**
+ * Token-based cloud access (preferred): the session comes encrypted from Flownt's
+ * "Mit Bambu Lab anmelden" dialog. An expired access token is renewed with the refresh
+ * token; the renewed session is handed to `onRefresh` so it survives restarts.
+ */
+export class BambuCloudSession implements CloudTaskSource {
+  private refreshing: Promise<boolean> | null = null;
+
+  constructor(private token: CloudToken, private readonly onRefresh: (t: CloudToken) => void = () => {}) {}
+
+  get current(): CloudToken { return this.token; }
+
+  private async refresh(): Promise<boolean> {
+    if (!this.token.refreshToken) return false;
+    this.refreshing ??= (async () => {
+      try {
+        const res = await fetch(`${BASE_URL}/user/refreshtoken`, {
+          method: 'POST', headers: HEADERS,
+          body: JSON.stringify({ refreshToken: this.token.refreshToken }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const data = await res.json().catch(() => ({})) as LoginResponse;
+        if (!res.ok || !data.accessToken) {
+          console.warn(`[bambu-cloud] token refresh failed (${res.status})`);
+          return false;
+        }
+        this.token = {
+          accessToken: data.accessToken,
+          refreshToken: data.refreshToken || this.token.refreshToken,
+          expiresAt: typeof data.expiresIn === 'number' ? Date.now() + data.expiresIn * 1000 : undefined,
+        };
+        this.onRefresh(this.token);
+        console.log('[bambu-cloud] token refreshed');
+        return true;
+      } catch (err) {
+        console.warn('[bambu-cloud] token refresh error:', (err as Error).message);
+        return false;
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  async listTasks(serial: string): Promise<CloudTask[] | null> {
+    try {
+      // Renew a day before the expiry instead of waiting for the 401.
+      if (this.token.expiresAt && this.token.expiresAt - Date.now() < 24 * 3_600_000) await this.refresh();
+      let r = await fetchTasks(this.token.accessToken, serial);
+      if (r.status === 401 && await this.refresh()) r = await fetchTasks(this.token.accessToken, serial);
+      if (r.status < 200 || r.status >= 300) {
+        console.warn(`[bambu-cloud] task history ${r.status}`);
+        return null;
+      }
+      return r.tasks;
+    } catch (err) {
+      console.warn('[bambu-cloud] task history error:', (err as Error).message);
+      return null;
+    }
+  }
+}
+
+/**
+ * Legacy access with e-mail + password from the local bridge config. Accounts that get a
+ * login code by e-mail cannot use it; prefer the token from Flownt.
+ */
+export class BambuCloudClient implements CloudTaskSource {
   private token: string | null = null;
   private tokenExpiry = 0;
 
@@ -59,45 +140,16 @@ export class BambuCloudClient {
     }
   }
 
-  async getLatestTaskWeight(serial: string): Promise<number | null> {
+  async listTasks(serial: string): Promise<CloudTask[] | null> {
     if (!await this.ensureToken()) return null;
     try {
-      const res = await fetch(`${BASE_URL}/my/tasks`, {
-        headers: { ...HEADERS, Authorization: `Bearer ${this.token}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) {
-        if (res.status === 401) this.token = null;
-        return null;
-      }
-      const data = await res.json() as TasksResponse;
-      const task = data.hits?.find(t => t.deviceId === serial);
-      if (!task) {
-        console.log('[bambu-cloud] Kein Task für Serial gefunden');
-        return null;
-      }
-      return typeof task.weight === 'number' ? task.weight : null;
+      const r = await fetchTasks(this.token!, serial);
+      if (r.status === 401) this.token = null;
+      return r.status >= 200 && r.status < 300 ? r.tasks : null;
     } catch (err) {
       console.warn('[bambu-cloud] Tasks-Abruf Fehler:', err);
       return null;
     }
-  }
-
-  // Versucht bis zu maxAttempts mal mit delay dazwischen — cloud braucht etwas Zeit nach Druckende
-  async getLatestTaskWeightWithRetry(serial: string, maxAttempts = 4, delayMs = 8_000): Promise<number | null> {
-    for (let i = 0; i < maxAttempts; i++) {
-      if (i > 0) {
-        console.log(`[bambu-cloud] Warte ${delayMs / 1000}s, Versuch ${i + 1}/${maxAttempts}…`);
-        await new Promise<void>(r => setTimeout(r, delayMs));
-      }
-      const weight = await this.getLatestTaskWeight(serial);
-      if (weight != null) {
-        console.log(`[bambu-cloud] Gewicht erhalten: ${weight}g`);
-        return weight;
-      }
-    }
-    console.warn('[bambu-cloud] Gewicht nicht abrufbar nach allen Versuchen');
-    return null;
   }
 }
 

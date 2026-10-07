@@ -35,7 +35,7 @@ test('job_complete: timing, outcome, slicer estimate, tray_uuid per line', async
   assert.equal(b.failure_reason, undefined);
   assert.deepEqual(b.filament_weights, [{
     filamentIndex: 7, grams: 20, color: '#FFFFFF', slotRef: { source: 'ams', value: 7 },
-    measureSource: 'slicer_file', estimated_grams: 20, tray_uuid: 'FA4E0000000000000000000000000007',
+    filament_type: null, measureSource: 'slicer_file', estimated_grams: 20, tray_uuid: 'FA4E0000000000000000000000000007',
   }]);
 });
 
@@ -54,7 +54,7 @@ test('job_failed: reason, last progress, partial usage by layers', async () => {
   assert.equal(b.last_progress_pct, 31);
   assert.deepEqual(b.filament_weights, [{
     filamentIndex: 7, grams: 5, color: undefined, slotRef: { source: 'ams', value: 7 },
-    measureSource: 'estimated_partial', estimated_grams: 20, tray_uuid: 'FA4E0000000000000000000000000007',
+    filament_type: null, measureSource: 'estimated_partial', estimated_grams: 20, tray_uuid: 'FA4E0000000000000000000000000007',
   }]);
   assert.equal(be.delivered('job_complete').length, 0);
 });
@@ -94,7 +94,9 @@ test('stale layer count of the previous job is not used (captured: 29/29 at 0 %)
     () => base({ jobState: 'preparing', progressPct: 0, layerNum: 29, totalLayers: 29, parsedFilamentWeights: [{ filamentIndex: 1, grams: 20 }] }),
     failed, failed,
   ], { dir, backend: be, clock: new Clock() });
-  assert.equal(be.delivered('job_failed')[0].filament_weights?.[0].grams, 0);
+  // Nothing printed: no material line, and not flagged as unknown either.
+  assert.equal(be.delivered('job_failed')[0].filament_weights, undefined);
+  assert.equal(be.delivered('job_failed')[0].material_unknown, undefined);
 });
 
 test('estimated duration falls back to the printer\'s remaining time at the start', async () => {

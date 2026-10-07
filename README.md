@@ -155,9 +155,21 @@ der Bambu-App verbunden bleiben.
 > die Bridge meldet `command_rejected`. Status, AMS, Druckdateien und Kamera funktionieren in
 > jedem Modus. Details in [docs/BAMBU_LAN.md](docs/BAMBU_LAN.md).
 
-Optional bei Bambu: Zugangsdaten zur Bambu Cloud, damit die Bridge das Filamentgewicht nach
-Druckende aus der Cloud lesen kann, wenn die Druckdatei keine Gewichte liefert. Diese
-Zugangsdaten werden in der Konfiguration gespeichert.
+**Filamentverbrauch.** Die Bridge bucht den Verbrauch eines Druckauftrags aus der ersten Quelle,
+die etwas liefert:
+
+1. **Druckdatei** (Slicer-Gewichte je Filament) von der SD-Karte, während des Drucks oder bis zu
+   30 Minuten nach Druckende.
+2. **Bambu-Cloud-Auftragsverlauf** (Slicer-Gewichte je AMS-Slot), wenn die Druckdatei nicht
+   lesbar ist, etwa bei H2C/X2D-Aufträgen im internen Speicher. Dafür in Flownt unter
+   **Drucker & Geräte → Mit Bambu Lab anmelden** die Option „Cloud-Verlauf für die
+   Materialbuchung nutzen“ wählen. Flownt verschlüsselt die Cloud-Sitzung mit dem Schlüssel
+   dieser Bridge; die Bridge erneuert sie selbst. Alternativ gehen Zugangsdaten zur Bambu Cloud
+   in der lokalen Konfiguration, aber nur für Konten ohne Anmeldecode per E-Mail.
+3. **Schätzung aus der RFID-Restmenge** (Bambu-Spulen im AMS, Auflösung etwa 1 % der Spule).
+
+Liefert keine Quelle etwas, meldet die Bridge den Auftrag als „Material fehlt“; in Flownt lässt
+sich das Material dann im Drucklog nachtragen.
 
 **Klipper / Moonraker:** Drucker-URL (z. B. `http://192.168.1.100`) und, falls in Moonraker
 eingerichtet, ein API-Key.

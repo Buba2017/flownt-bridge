@@ -24,6 +24,10 @@ export interface PrinterConfig {
   cameraTransport?: 'auto' | 'jpeg' | 'rtsp';
   bambuCloudEmail?: string;
   bambuCloudPassword?: string;
+  /** Bambu Cloud session of the account the printer is bound to, delivered encrypted by
+   *  Flownt (secret `bambu_cloud_token`). Used to read the cloud task history for jobs
+   *  whose print file is not readable. Kept up to date when the token is renewed. */
+  bambuCloudToken?: { accessToken: string; refreshToken?: string; expiresAt?: number };
   // Optionaler Smart-Plug zur echten Strommessung (Shelly Gen1 + Gen2, Auto-Erkennung).
   smartPlugType?: SmartPlugType;
   smartPlugUrl?: string; // IP/Host des Shelly im LAN, z. B. "192.168.178.50"

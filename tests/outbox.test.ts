@@ -13,7 +13,7 @@ test('a failed push is retried with backoff and delivered exactly once', async (
   be.respond = () => new Error('ECONNRESET');
   ob.enqueue('p1', 'P1', body('a'));
   await ob.flush();
-  assert.deepEqual(ob.stats(), { pending: 1, oldestAgeS: 0 });
+  assert.deepEqual(ob.stats(), { pending: 1, oldestAgeS: 0, awaitingMaterial: 0, rejected: 0 });
   await ob.flush(); // not due yet (5 s backoff)
   assert.equal(be.attempts('job_complete'), 1);
   clock.t += 5_000;
@@ -30,7 +30,7 @@ test('a failed push is retried with backoff and delivered exactly once', async (
   await ob.flush();
   assert.equal(be.delivered('job_complete').length, 1);
   assert.equal(be.attempts('job_complete'), 3);
-  assert.deepEqual(ob.stats(), { pending: 0, oldestAgeS: null });
+  assert.deepEqual(ob.stats(), { pending: 0, oldestAgeS: null, awaitingMaterial: 0, rejected: 0 });
 });
 
 test('the outbox survives a restart', async () => {
@@ -42,7 +42,7 @@ test('the outbox survives a restart', async () => {
   clock.t += 120_000;
   be.respond = () => 200;
   const second = new Outbox(join(dir, 'outbox.json'), be.send, clock.now);
-  assert.deepEqual(second.stats(), { pending: 1, oldestAgeS: 120 });
+  assert.deepEqual(second.stats(), { pending: 1, oldestAgeS: 120, awaitingMaterial: 0, rejected: 0 });
   await second.flush();
   assert.equal(be.delivered().length, 1);
   assert.equal(new Outbox(join(dir, 'outbox.json'), be.send, clock.now).stats().pending, 0);

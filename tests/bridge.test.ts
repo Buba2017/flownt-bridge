@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { CONTRACT_VERSION } from '../src/contract.js';
 import { BambuAdapter } from '../src/adapters/bambu.js';
 import type { PrinterSnapshot } from '../src/adapters/types.js';
 import { Outbox } from '../src/outbox.js';
@@ -21,7 +22,7 @@ test('every push carries the contract version', async () => {
   const dir = tempDir(), be = new FakeBackend();
   await runSteps([() => printing()], { dir, backend: be, clock: new Clock() });
   assert.ok(be.calls.length >= 2);
-  assert.ok(be.calls.every(c => c.body.contract_version === 2));
+  assert.ok(be.calls.every(c => c.body.contract_version === CONTRACT_VERSION));
 });
 
 test('job end push fails → stored, resent exactly once after recovery', async () => {

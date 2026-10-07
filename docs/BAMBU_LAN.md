@@ -90,7 +90,17 @@ Befehle müssen immer den Drucker benennen. `/printer/command` nimmt `printerId`
   - H2D/H2C/H2S/X2D/P2S haben internen Speicher und legen aus Bambu Studio gesendete Aufträge
     dort ab, wenn beim Senden nicht die SD-Karte als Ziel gewählt wird. Solche Aufträge sind
     über FTPS nicht lesbar, also gibt es dafür keine Plattenvorschau und keine Gewichte aus dem
-    Slicer; Flownt greift dann auf die anderen Gewichtsquellen zurück.
+    Slicer. Auch Nachdrucke am Druckerdisplay laufen aus dem internen Speicher.
+  - Die Bridge fragt in diesem Fall den Bambu-Cloud-Auftragsverlauf ab
+    (`GET /v1/user-service/my/tasks?deviceId=<Seriennummer>`, `amsDetailMapping[]` mit Gramm je
+    Tray), sonst schätzt sie aus dem Rückgang der RFID-Restmenge (`remain`) zwischen Druckbeginn
+    und -ende. Der Cloud-Verlauf kennt nur Aufträge, die über die Cloud gestartet wurden; per LAN
+    gesendete Aufträge melden `subtask_id: ""` und `job_id: "0"`.
+  - Zuordnung Cloud-Auftrag ↔ Druckauftrag: zuerst über `task_id`/`subtask_id`/`job_id`, sonst
+    über denselben Drucker, Start- oder Endzeit (±20 min) und den Auftragsnamen.
+  - Die Datei bleibt nach dem Druck auf der SD-Karte. Konnte die Bridge sie während des Drucks
+    nicht laden, versucht sie es bis zu 30 Minuten nach Druckende erneut, bevor sie die
+    Job-Meldung sendet.
 - Dateinamen: Leerzeichen können zu `_` werden, und ein `/` im Auftragsnamen wird als `2f`
   gespeichert. Die Bridge probiert diese Varianten und listet danach `/cache`, `/` und `/model`.
 - `gcode_file` (`/data/Metadata/plate_<n>.gcode`) gibt die gedruckte Platte an.

@@ -45,6 +45,6 @@ test('3MF with several sliced plates: only the printed plate is counted', () => 
   const xml = '<config><plate><metadata key="index" value="1"/><filament id="1" used_g="10" color="#FFFFFF"/></plate>'
     + '<plate><metadata key="index" value="2"/><filament id="2" used_g="20" color="#000000"/></plate></config>';
   const file = Buffer.from(zipSync({ 'Metadata/slice_info.config': strToU8(xml) }));
-  assert.deepEqual(parseFileBuffer('job.gcode.3mf', file, 2), [{ filamentIndex: 2, grams: 20, color: '#000000' }]);
-  assert.deepEqual(parseFileBuffer('job.gcode.3mf', file, 1), [{ filamentIndex: 1, grams: 10, color: '#FFFFFF' }]);
+  assert.deepEqual(parseFileBuffer('job.gcode.3mf', file, 2), [{ filamentIndex: 2, grams: 20, color: '#000000', slicerOrder: 1 }]);
+  assert.deepEqual(parseFileBuffer('job.gcode.3mf', file, 1), [{ filamentIndex: 1, grams: 10, color: '#FFFFFF', slicerOrder: 0 }]);
 });

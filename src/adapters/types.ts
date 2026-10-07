@@ -12,7 +12,26 @@ export interface FilamentWeight {
   filamentIndex: number; // 0-basierter globaler AMS-Index: T0=0, T1=1, T4=AMS2-Slot0
   grams: number;
   color?: string;        // Slicer-Filamentfarbe (#RRGGBB) aus slice_info.config — für Mehrfarb-Slot-Zuordnung per Farbe
+  /** 0-based position of the filament in the slicer's list (Bambu slice_info ids start at 1). */
+  slicerOrder?: number;
+  /** Filament type the slicer used, e.g. "PLA" (Bambu slice_info `type`). */
+  filamentType?: string;
 }
+
+/** Raw job ids the printer reports (Bambu task_id / subtask_id / job_id), for matching
+ *  the job against the Bambu Cloud task history. */
+export interface JobIds {
+  taskId?: string;
+  subtaskId?: string;
+  jobId?: string;
+}
+
+/** Result of reading a finished job's print file again (after the job ended). */
+export type JobFileResult =
+  | { kind: 'ok'; weights: FilamentWeight[] }
+  | { kind: 'internal' }   // file in the printer's internal storage, never readable
+  | { kind: 'missing' }    // not on the SD card
+  | { kind: 'error'; message: string };
 
 export interface PrinterSnapshot {
   status: PrinterStatus;
@@ -48,6 +67,12 @@ export interface PrinterSnapshot {
   estimatedDurationMin?: number | null;
   /** The bridge sent a stop for the current job (a following FAILED is a cancel). */
   stopRequested?: boolean;
+  /** Raw job ids of the current/last job (Bambu). */
+  jobIds?: JobIds;
+  /** Printed plate of the current/last job (Bambu gcode_file plate_<n>). */
+  plateIndex?: number | null;
+  /** The job's file sits in the printer's internal storage (not readable over FTPS). */
+  fileInternal?: boolean;
   powerW?: number | null;       // aktuelle Wirkleistung vom Smart-Plug (Shelly), falls konfiguriert
   energyWhUsed?: number | null; // gemessener Energieverbrauch des Drucks in Wh (Zähler Ende − Start)
 }
@@ -66,6 +91,9 @@ export interface Adapter {
    *  changes, the bridge pushes immediately instead of waiting for the poll interval,
    *  so a newly inserted spool shows up in Flownt within seconds. */
   amsSignature?(): string;
+  /** Reads a job's print file again after the job ended (weights only, no preview); used
+   *  when the fetch during the print failed. Adapters without print files omit it. */
+  refetchJobWeights?(printFile: string, plateIndex: number | null): Promise<JobFileResult>;
   /** Ressourcen freigeben (MQTT-Client, Timer) — MUSS bei Config-Änderung/Löschen
    *  aufgerufen werden, sonst laufen alte Verbindungen als Geister weiter. */
   dispose?(): void;

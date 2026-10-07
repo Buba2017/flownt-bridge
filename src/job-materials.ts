@@ -64,7 +64,8 @@ const normHex = (c?: string) => c ? '#' + c.replace(/^#/, '').replace(/^0x/i, ''
 
 export function resolveMaterials(input: FilamentWeight[], ctx: MaterialContext): ResolvedMaterials {
   const notes: ResolvedMaterials['notes'] = [];
-  const raw = (fw: FilamentWeight): ResolvedLine => ({ ...fw, source: 'slicer_order' });
+  // Unresolved lines go out by slicer order, 0-based as the contract defines it.
+  const raw = (fw: FilamentWeight): ResolvedLine => ({ ...fw, filamentIndex: fw.slicerOrder ?? fw.filamentIndex, source: 'slicer_order' });
   if (!input.length) return { lines: [], notes };
 
   // 1. print.mapping

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { constants, publicEncrypt } from 'node:crypto';
+import { constants, createCipheriv, publicEncrypt, randomBytes } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -162,4 +162,24 @@ test('a code delivered before its printer is parked and applied when the printer
   reconcile(response([...PRINTERS, remote('f4', 'S4')]), cb, guard);
   const p4 = loadMultiConfig().printers.find(p => p.flowntPrinterId === 'f4')!;
   assert.equal(p4.adapterApiKey, 'newcode9');
+});
+
+test('a Bambu Cloud token arrives in the hybrid envelope and is stored on the printer', () => {
+  seedConfig();
+  const { cb, calls } = recorder();
+  const token = JSON.stringify({ access_token: 'a'.repeat(900), refresh_token: 'r'.repeat(300), expires_at: '2027-01-05T00:00:00Z' });
+  const key = randomBytes(32), iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update(token, 'utf-8'), cipher.final(), cipher.getAuthTag()]);
+  const k = publicEncrypt({ key: publicKeyPem(), padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, key);
+  const ciphertext = 'hyb1:' + Buffer.from(JSON.stringify({
+    k: k.toString('base64'), iv: iv.toString('base64'), ct: ct.toString('base64'),
+  })).toString('base64');
+  reconcile(response(PRINTERS, [{ id: 's9', printer_id: PRINTERS[0].printer_id, kind: 'bambu_cloud_token', ciphertext }]), cb, new RemovalGuard(() => 0));
+  const p = loadMultiConfig().printers.find(x => x.flowntPrinterId === PRINTERS[0].printer_id)!;
+  assert.equal(p.bambuCloudToken?.accessToken, 'a'.repeat(900));
+  assert.equal(p.bambuCloudToken?.refreshToken, 'r'.repeat(300));
+  assert.equal(p.bambuCloudToken?.expiresAt, Date.parse('2027-01-05T00:00:00Z'));
+  assert.equal(p.adapterApiKey, `code-${PRINTERS[0].printer_id}`, 'access code untouched');
+  assert.deepEqual(calls.update, [PRINTERS[0].printer_id]);
 });

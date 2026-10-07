@@ -138,6 +138,12 @@ const plainDataHosts = new Set<string>();        // printers that need PROT C
 const backoffUntil = new Map<string, number>();  // host → no FTPS before this time
 const BACKOFF_MS = 5 * 60_000;
 
+/** Until when FTPS to this host is paused after a connection failure (epoch ms), else null. */
+export function ftpsPausedUntil(host: string): number | null {
+  const until = backoffUntil.get(host);
+  return until && until > Date.now() ? until : null;
+}
+
 /** Resets per-host state (tests). */
 export function resetFtpsState(): void {
   plainDataHosts.clear();

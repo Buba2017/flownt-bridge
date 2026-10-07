@@ -20,9 +20,11 @@
 /**
  * Contract version. Bump on every change to the wire format; the bridge sends it as
  * `contract_version`, bridge-ingest warns (but still accepts) when it is older.
- * 1 = everything before the field existed, 2 = job timing/outcome/partial usage/tray_uuid.
+ * 1 = everything before the field existed, 2 = job timing/outcome/partial usage/tray_uuid,
+ * 3 = more usage sources (Bambu Cloud per slot, AMS remaining-% estimate), slicer filament
+ * identity per line, `material_unknown`, cloud token secrets.
  */
-export const CONTRACT_VERSION = 2;
+export const CONTRACT_VERSION = 3;
 
 /** Kanonische Event-Typen, die die Bridge an Flownt sendet. */
 export type EventType = 'heartbeat' | 'status_update' | 'job_complete' | 'job_failed';
@@ -121,15 +123,21 @@ export interface SlotRef {
 export interface MaterialLine {
   filamentIndex: number;                          // Kompat — heutige Semantik, unverändert
   grams: number;
+  /** Filament colour the slicer used for this line ("#RRGGBB"). */
   color?: string;
+  /** Filament type the slicer used for this line, e.g. "PLA", "ABS-GF" (contract ≥ 3). Shown
+   *  on the print log when no spool can be matched. */
+  filament_type?: string | null;
   slotRef: SlotRef;                               // abstrahierte Slot-/Lagerplatz-Identität
   /**
    * Source of `grams`:
    * - `slicer_file` / `bambu_cloud`: full usage of a finished job.
    * - `estimated_partial`: a failed/cancelled job; slicer grams scaled by the progress
    *   reached (`estimated_grams` holds the unscaled slicer value).
+   * - `ams_remain`: estimate from the drop of the RFID remaining-% between job start and end
+   *   times the spool's nominal weight (contract ≥ 3; resolution about 1 % of the spool).
    */
-  measureSource: 'slicer_file' | 'bambu_cloud' | 'estimated_partial';
+  measureSource: 'slicer_file' | 'bambu_cloud' | 'estimated_partial' | 'ams_remain';
   /** Slicer estimate for the whole job in g (contract ≥ 2). */
   estimated_grams?: number;
   /**
@@ -202,6 +210,12 @@ export interface IngestBody {
   filament_weights?: MaterialLine[];
   cloud_weight_g?: number;
   energy_wh?: number;
+  /**
+   * True when the bridge found no usage source at all for this job (no slicer file, no
+   * cloud record, no RFID estimate; contract ≥ 3). The log is then flagged "material
+   * missing" instead of silently booking 0 g.
+   */
+  material_unknown?: boolean;
 }
 
 // ── Bridge link (bridge-sync): pairing, central configuration, discovery ──────────
@@ -273,7 +287,13 @@ export interface LinkedPrinterConfig {
 export interface BridgeSecret {
   id: string;
   printer_id: string;
-  kind: 'access_code';
+  /**
+   * - `access_code`: the printer's LAN access code.
+   * - `bambu_cloud_token`: Bambu Cloud session of the account the printer is bound to,
+   *   JSON `{"access_token","refresh_token","expires_at"}` (contract ≥ 3). The bridge reads the
+   *   cloud task history with it to book usage of jobs whose file it cannot read.
+   */
+  kind: 'access_code' | 'bambu_cloud_token';
   /** base64 RSA-OAEP(SHA-256) ciphertext for the bridge's public key. */
   ciphertext: string;
 }

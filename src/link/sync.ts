@@ -70,6 +70,19 @@ export function unpair(): void {
   saveMultiConfig(cfg);
 }
 
+/** `{"access_token","refresh_token","expires_at"}` from Flownt → config shape; null if unusable. */
+export function parseCloudToken(json: string): PrinterConfig['bambuCloudToken'] | null {
+  const x = JSON.parse(json) as Record<string, unknown>;
+  const accessToken = typeof x.access_token === 'string' ? x.access_token : '';
+  if (!accessToken) return null;
+  const expires = typeof x.expires_at === 'string' ? Date.parse(x.expires_at) : typeof x.expires_at === 'number' ? x.expires_at : NaN;
+  return {
+    accessToken,
+    ...(typeof x.refresh_token === 'string' && x.refresh_token ? { refreshToken: x.refresh_token } : {}),
+    ...(Number.isFinite(expires) ? { expiresAt: expires } : {}),
+  };
+}
+
 /** Apply a sync response to the local config. Exported for tests. */
 export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: RemovalGuard = removalGuard): void {
   const cfg = loadMultiConfig();
@@ -137,6 +150,20 @@ export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: Rem
   // printer this bridge does not have (yet) is parked like a removed printer's code.
   for (const s of res.secrets) {
     const local = cfg.printers.find(p => p.flowntPrinterId === s.printer_id);
+    if (s.kind === 'bambu_cloud_token') {
+      // Cloud session for the task history (material of jobs whose file is unreadable).
+      try {
+        const token = parseCloudToken(decryptSecret(s.ciphertext));
+        if (local && token && JSON.stringify(local.bambuCloudToken) !== JSON.stringify(token)) {
+          local.bambuCloudToken = token;
+          if (!added.includes(local) && !updated.includes(local)) updated.push(local);
+        }
+      } catch (e) {
+        log.error(`Secret ${s.id} nicht entschlüsselbar: ${(e as Error).message}`);
+      }
+      ackQueue.push(s.id);
+      continue;
+    }
     try {
       const code = decryptSecret(s.ciphertext).trim();
       if (local && code && local.adapterApiKey !== code) {

@@ -119,7 +119,7 @@ test('adapter finds a file started from the SD card in a sub folder via LIST', a
     const a = adapter(srv.port);
     a.handleMessage(running('Box v2'));
     const s = await waitFor(async () => { const s = await a.getSnapshot(); return s.parsedFilamentWeights?.length && s; }, 5_000, 'weights');
-    assert.deepEqual(s.parsedFilamentWeights, [{ filamentIndex: 1, grams: 12.5, color: '#FFFFFF' }]);
+    assert.deepEqual(s.parsedFilamentWeights, [{ filamentIndex: 1, grams: 12.5, color: '#FFFFFF', slicerOrder: 0 }]);
     assert.equal(s.estimatedDurationMin, 60);
     assert.ok(srv.commands.includes('LIST /My Prints'));
   } finally { await srv.close(); }

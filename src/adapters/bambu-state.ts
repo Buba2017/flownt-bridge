@@ -131,7 +131,7 @@ export function isTelemetry(p: PrintState, isOwnCommandReply: boolean): boolean 
   return true;
 }
 
-const nonZeroId = (v: unknown): string | null => {
+export const nonZeroId = (v: unknown): string | null => {
   const s = v == null ? '' : String(v).trim();
   return s && !/^0+$/.test(s) ? s : null;
 };

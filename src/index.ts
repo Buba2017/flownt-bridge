@@ -11,13 +11,15 @@ import { startDiscovery } from './link/discovery.js';
 import { pair, startSyncLoop, syncNow, type LinkCallbacks } from './link/sync.js';
 import { createLogger, enableFileLogging, installConsoleCapture, logFileFromArgs } from './logger.js';
 import { registerHealthProvider } from './health-registry.js';
-import { outboxStats } from './outbox.js';
+import { getOutbox, outboxStats } from './outbox.js';
 
 // Job end events waiting for delivery to Flownt (persistent outbox) in /healthz.
 registerHealthProvider('outbox', () => {
   const s = outboxStats();
-  return { pending: s.pending, oldest_age_s: s.oldestAgeS };
+  return { pending: s.pending, oldest_age_s: s.oldestAgeS, awaiting_material: s.awaitingMaterial, rejected: s.rejected };
 });
+// Queued job ends always go out with the printer's current Flownt token.
+getOutbox().setTokenResolver(id => loadMultiConfig().printers.find(p => p.id === id)?.flowntAuthToken ?? null);
 
 // Logging first: timestamps/levels for every console line, optional rotating log file.
 installConsoleCapture();
