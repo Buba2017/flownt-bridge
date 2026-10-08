@@ -166,7 +166,10 @@ die etwas liefert:
    Materialbuchung nutzen“ wählen. Flownt verschlüsselt die Cloud-Sitzung mit dem Schlüssel
    dieser Bridge; die Bridge erneuert sie selbst. Alternativ gehen Zugangsdaten zur Bambu Cloud
    in der lokalen Konfiguration, aber nur für Konten ohne Anmeldecode per E-Mail.
-3. **Schätzung aus der RFID-Restmenge** (Bambu-Spulen im AMS, Auflösung etwa 1 % der Spule).
+3. **Früherer gleicher Auftrag:** das Slicer-Gewicht eines früheren Laufs derselben Platte auf
+   demselben Drucker (gleicher Name, Planzeit ±10 %), aus dem Cloud-Verlauf oder aus Flownt.
+4. **Schätzung aus der RFID-Restmenge** (nur Bambu-Spulen). Sie ist grob und dient nur, wenn
+   nichts anderes vorliegt.
 
 Liefert keine Quelle etwas, meldet die Bridge den Auftrag als „Material fehlt“; in Flownt lässt
 sich das Material dann im Drucklog nachtragen.
