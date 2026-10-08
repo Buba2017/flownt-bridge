@@ -32,6 +32,8 @@ export interface CloudTask {
   costTime: number | null;
   /** Bambu task status: 2 = finished, 3 = failed/cancelled (others: running, queued). */
   status: number | null;
+  /** Plate thumbnail (PNG, signed URL valid for a while), null if none. */
+  cover: string | null;
   ams: CloudAmsUse[];
 }
 
@@ -81,7 +83,8 @@ export function parseCloudTasks(data: unknown): CloudTask[] {
       id, deviceId,
       title: typeof x.title === 'string' ? x.title : typeof x.designTitle === 'string' ? x.designTitle : '',
       startTime: time(x.startTime), endTime: time(x.endTime), weight: num(x.weight),
-      costTime: num(x.costTime), status: num(x.status), ams,
+      costTime: num(x.costTime), status: num(x.status),
+      cover: typeof x.cover === 'string' && /^https:\/\//.test(x.cover) ? x.cover : null, ams,
     });
   }
   return out;
@@ -157,6 +160,19 @@ export function templateCloudTask(tasks: CloudTask[], c: TemplateCriteria): Clou
     && (t.startTime ?? 0) < c.before && t.ams.length > 0);
   fits.sort((a, b) => (b.startTime ?? 0) - (a.startTime ?? 0));
   return fits[0] ?? null;
+}
+
+/**
+ * Cloud task whose plate thumbnail fits a running job: the job's own task (by id, or same
+ * title started within 20 min), else an earlier finished run of the same plate.
+ */
+export function previewTask(tasks: CloudTask[], c: TaskCriteria & { estimatedMin: number | null }): CloudTask | null {
+  const withCover = tasks.filter(t => t.cover);
+  const own = matchCloudTask(withCover, c);
+  if (own && (!c.title || normTitle(own.title) === normTitle(c.title))) return own;
+  return c.estimatedMin && c.title
+    ? templateCloudTask(withCover, { serial: c.serial, title: c.title, estimatedMin: c.estimatedMin, before: c.startedAt })
+    : null;
 }
 
 const trayUuidOf = (slots: AmsSlot[], idx: number): string | null => {

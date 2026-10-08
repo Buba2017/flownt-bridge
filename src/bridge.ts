@@ -8,12 +8,39 @@ import { addEvent } from './events.js';
 import { defaultSender, Enricher, getOutbox, Outbox, PendingMaterial, Sender } from './outbox.js';
 import { JobEnd, JobSession, JobSessionStore, JobTracker } from './job-session.js';
 import { EXTERNAL_SLOT, isTrackedSlot, MaterialContext, ResolvedLine, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
-import { amsRemainLines, cloudTaskLines, matchCloudTask, templateCloudTask } from './material-sources.js';
+import { amsRemainLines, cloudTaskLines, matchCloudTask, previewTask, templateCloudTask } from './material-sources.js';
 import { cloudSourceFor } from './cloud-sources.js';
 import type { CloudTaskSource } from './bambu-cloud.js';
 
 /** How long a job end without usage figures waits for the file / cloud lookup. */
 const MATERIAL_LOOKUP_MS = 30 * 60_000;
+/** A job without a file preview asks the cloud after this long (the file may still come). */
+const CLOUD_PREVIEW_AFTER_MS = 3 * 60_000;
+
+interface CloudPreviewState { jobKey: string; preview: PrinterSnapshot['printPreview']; tries: number; nextAt: number }
+
+/**
+ * Plate thumbnail from the Bambu Cloud for a running job without a file preview (file in
+ * internal storage, sent over LAN): the job's own cloud task or an earlier run of the same
+ * plate. Tried up to 3 times per job, 5 min apart; the result is kept per job so the
+ * preview goes out once.
+ */
+async function cloudPreview(
+  st: CloudPreviewState | null, s: JobSession, cloud: CloudTaskSource, serial: string, t: number,
+): Promise<CloudPreviewState> {
+  const state = st && st.jobKey === s.jobKey ? st : { jobKey: s.jobKey, preview: null, tries: 0, nextAt: 0 };
+  if (state.preview || state.tries >= 3 || t < state.nextAt || !s.printFile) return state;
+  state.tries++;
+  state.nextAt = t + 5 * 60_000;
+  const tasks = await cloud.listTasks(serial);
+  const ids = s.jobIds ? [s.jobIds.taskId, s.jobIds.subtaskId, s.jobIds.jobId].filter((x): x is string => !!x) : [];
+  const task = tasks && previewTask(tasks, {
+    serial, ids, startedAt: s.startedAt, finishedAt: t, title: s.printFile, estimatedMin: s.estimatedDurationMin,
+  });
+  const png = task?.cover && cloud.fetchCover ? await cloud.fetchCover(task.cover) : null;
+  if (png) state.preview = { printFile: s.printFile, png };
+  return state;
+}
 
 // Last preview delivered per printer config (object identity = one fetch of one job).
 const sentPreviews = new Map<string, PrinterSnapshot['printPreview']>();
@@ -279,6 +306,7 @@ export async function runBridge(
   let consecutiveErrors = 0;
   let lastEnergyWh: number | null = null;     // last smart-plug meter reading (Wh)
   let lastLoggedSlot: number | null = tracker.session?.lastActiveSlot ?? null;
+  let previewState: CloudPreviewState | null = null;
 
   while (!isCancelled()) {
     try {
@@ -325,6 +353,22 @@ export async function runBridge(
       if (active != null && isTrackedSlot(active) && active !== lastLoggedSlot) {
         lastLoggedSlot = active;
         addEvent(cfg.id, 'info', `Aktiver Filament-Slot: ${slotLabel(active)}`);
+      }
+
+      // No preview from the print file: the plate thumbnail of the cloud task.
+      const sess = tracker.session;
+      if (sess && !snapshot.printPreview && (snapshot.status === 'printing' || snapshot.status === 'paused')
+          && (sess.fileInternal || now() - sess.startedAt > CLOUD_PREVIEW_AFTER_MS)) {
+        const c = getCfg();
+        const cloud = cloudFor(c);
+        if (cloud && c.adapterSerial) {
+          try {
+            previewState = await cloudPreview(previewState, sess, cloud, c.adapterSerial, now());
+          } catch (e) {
+            console.warn(`[${cfg.name}] cloud preview:`, (e as Error).message);
+          }
+          if (previewState?.jobKey === sess.jobKey && previewState.preview) snapshot = { ...snapshot, printPreview: previewState.preview };
+        }
       }
 
       await outbox.flush();

@@ -209,3 +209,29 @@ test('template: an earlier finished cloud run of the same plate (same printer, n
   assert.deepEqual(lines.map(l => [l.grams, l.slotRef.value, l.measureSource, l.tray_uuid]), [[66.85, 2, 'template', 'U3']],
     'single filament: booked on the slot this run used');
 });
+
+test('preview: the cloud task\'s plate thumbnail for a job without a file preview', async () => {
+  const { previewTask } = await import('../src/material-sources.js');
+  const { runSteps } = await import('./helpers/bridge.js');
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const start = Date.parse('2026-10-06T12:00:00Z');
+  const tasks = parseCloudTasks({ hits: [
+    { id: 7, deviceId: 'TESTSERIAL', title: 'Oberschale', startTime: '2026-10-05T09:45:34Z', costTime: 151 * 60, status: 2,
+      cover: 'https://example.com/plate.png', amsDetailMapping: [{ ams: 0, weight: 66.85 }] },
+  ] });
+  // LAN job (no cloud task of its own): an earlier run of the same plate.
+  assert.equal(previewTask(tasks, { serial: 'TESTSERIAL', ids: [], startedAt: start, finishedAt: start + 1000, title: 'Oberschale', estimatedMin: 152 })?.id, '7');
+  assert.equal(previewTask(tasks, { serial: 'TESTSERIAL', ids: [], startedAt: start, finishedAt: start + 1000, title: 'Oberschale', estimatedMin: 30 }), null);
+
+  const dir = tempDir(), clock = new Clock(start), be = new FakeBackend();
+  const fetched: string[] = [];
+  const cloud = { listTasks: async () => tasks, fetchCover: async (u: string) => { fetched.push(u); return png; } };
+  const run = (over: object) => () => ({ status: 'printing' as const, printFile: 'Oberschale', jobKey: 'task:1', jobState: 'printing' as const, progressPct: 1, etaSec: 152 * 60, ...over });
+  await runSteps([run({}), run({ progressPct: 5 }), run({ progressPct: 6 }), run({ progressPct: 7 }), run({ progressPct: 8 }), run({ progressPct: 9 }), run({ progressPct: 10 }), run({ progressPct: 11 })],
+    { dir, backend: be, clock, cloudSource: () => cloud });
+  const previews = be.calls.filter(c => c.body.print_preview).map(c => c.body.print_preview);
+  assert.equal(previews.length, 1, 'sent once per job');
+  assert.equal(previews[0]!.print_file, 'Oberschale');
+  assert.equal(Buffer.from(previews[0]!.png_base64, 'base64').equals(png), true);
+  assert.deepEqual(fetched, ['https://example.com/plate.png']);
+});

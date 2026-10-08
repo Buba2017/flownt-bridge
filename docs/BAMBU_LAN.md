@@ -100,6 +100,8 @@ Befehle müssen immer den Drucker benennen. `/printer/command` nimmt `printerId`
     Tray), sonst schätzt sie aus dem Rückgang der RFID-Restmenge (`remain`) zwischen Druckbeginn
     und -ende. Der Cloud-Verlauf kennt nur Aufträge, die über die Cloud gestartet wurden; per LAN
     gesendete Aufträge melden `subtask_id: ""` und `job_id: "0"`.
+  - Vorschau: Ohne lesbare Druckdatei nimmt die Bridge das Plattenbild (`cover`, PNG) des
+    Cloud-Auftrags, sonst eines früheren Laufs derselben Platte (gleicher Name, Planzeit ±10 %).
   - Zuordnung Cloud-Auftrag ↔ Druckauftrag: zuerst über `task_id`/`subtask_id`/`job_id`, sonst
     über denselben Drucker, Start- oder Endzeit (±20 min) und den Auftragsnamen.
   - Die Datei bleibt nach dem Druck auf der SD-Karte. Konnte die Bridge sie während des Drucks

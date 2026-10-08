@@ -29,6 +29,24 @@ export interface CloudToken {
 export interface CloudTaskSource {
   /** Recent tasks of this printer; null when the cloud cannot be reached or rejects us. */
   listTasks(serial: string): Promise<CloudTask[] | null>;
+  /** Downloads a task's plate thumbnail; null unless it is a PNG of at most 2 MB. */
+  fetchCover?(url: string): Promise<Buffer | null>;
+}
+
+const MAX_COVER = 2 * 1024 * 1024;
+
+/** Plate thumbnail of a cloud task (signed https URL, no credentials needed). */
+export async function downloadCover(url: string): Promise<Buffer | null> {
+  if (!/^https:\/\//.test(url)) return null;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000), redirect: 'follow' });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const png = buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    return png && buf.length <= MAX_COVER ? buf : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchTasks(token: string, serial: string): Promise<{ status: number; tasks: CloudTask[] }> {
@@ -48,6 +66,7 @@ async function fetchTasks(token: string, serial: string): Promise<{ status: numb
  */
 export class BambuCloudSession implements CloudTaskSource {
   private refreshing: Promise<boolean> | null = null;
+  fetchCover = downloadCover;
 
   constructor(private token: CloudToken, private readonly onRefresh: (t: CloudToken) => void = () => {}) {}
 
@@ -109,6 +128,7 @@ export class BambuCloudSession implements CloudTaskSource {
  */
 export class BambuCloudClient implements CloudTaskSource {
   private token: string | null = null;
+  fetchCover = downloadCover;
   private tokenExpiry = 0;
 
   constructor(
