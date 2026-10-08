@@ -192,3 +192,20 @@ test('terminal body defers a job without slicer weights; the enricher finds file
   assert.equal(fromFile?.source, 'Druckdatei');
   assert.deepEqual(fromFile?.lines.map(l => [l.grams, l.measureSource, l.filament_type, l.slotRef.value]), [[33.5, 'slicer_file', 'PETG', 1]]);
 });
+
+test('template: an earlier finished cloud run of the same plate (same printer, name, planned time)', async () => {
+  const { templateCloudTask } = await import('../src/material-sources.js');
+  const T = Date.parse('2026-10-07T13:00:00Z');
+  const tasks = parseCloudTasks({ hits: [
+    { id: 1, deviceId: 'S8', title: 'Oberschale', startTime: '2026-10-06T09:45:34Z', costTime: 151 * 60, status: 2, amsDetailMapping: [{ ams: 0, weight: 66.85, filamentType: 'PC' }] },
+    { id: 2, deviceId: 'S8', title: 'Oberschale', startTime: '2026-10-06T09:07:02Z', costTime: 37 * 60, status: 2, amsDetailMapping: [{ ams: 0, weight: 6.71 }] },
+    { id: 3, deviceId: 'S8', title: 'Oberschale', startTime: '2026-10-06T10:00:00Z', costTime: 151 * 60, status: 3, amsDetailMapping: [{ ams: 0, weight: 50 }] },
+    { id: 4, deviceId: 'S5', title: 'Oberschale', startTime: '2026-10-06T09:56:38Z', costTime: 168 * 60, status: 2, amsDetailMapping: [{ ams: 0, weight: 104.34 }] },
+  ] });
+  assert.equal(templateCloudTask(tasks, { serial: 'S8', title: 'Oberschale', estimatedMin: 153, before: T })?.id, '1', 'planned time decides the plate');
+  assert.equal(templateCloudTask(tasks, { serial: 'S8', title: 'Oberschale', estimatedMin: 300, before: T }), null, 'no plate with that time');
+  assert.equal(templateCloudTask(tasks, { serial: 'S6', title: 'Oberschale', estimatedMin: 168, before: T }), null, 'other printers do not count');
+  const lines = cloudTaskLines(tasks[0], [slot(0, 2, 40, 'U3')], null, { template: true, activeSlot: 2 });
+  assert.deepEqual(lines.map(l => [l.grams, l.slotRef.value, l.measureSource, l.tray_uuid]), [[66.85, 2, 'template', 'U3']],
+    'single filament: booked on the slot this run used');
+});

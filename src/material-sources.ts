@@ -28,6 +28,10 @@ export interface CloudTask {
   startTime: number | null;   // epoch ms
   endTime: number | null;     // epoch ms
   weight: number | null;      // total grams
+  /** Slicer-predicted print time in seconds. */
+  costTime: number | null;
+  /** Bambu task status: 2 = finished, 3 = failed/cancelled (others: running, queued). */
+  status: number | null;
   ams: CloudAmsUse[];
 }
 
@@ -76,7 +80,8 @@ export function parseCloudTasks(data: unknown): CloudTask[] {
     out.push({
       id, deviceId,
       title: typeof x.title === 'string' ? x.title : typeof x.designTitle === 'string' ? x.designTitle : '',
-      startTime: time(x.startTime), endTime: time(x.endTime), weight: num(x.weight), ams,
+      startTime: time(x.startTime), endTime: time(x.endTime), weight: num(x.weight),
+      costTime: num(x.costTime), status: num(x.status), ams,
     });
   }
   return out;
@@ -129,6 +134,31 @@ export function matchCloudTask(tasks: CloudTask[], c: TaskCriteria): CloudTask |
   return best?.t ?? null;
 }
 
+export interface TemplateCriteria {
+  serial: string;
+  title: string;
+  /** Planned print time of this job in minutes (printer's estimate at the start). */
+  estimatedMin: number;
+  /** Only runs started before this (epoch ms). */
+  before: number;
+}
+
+/**
+ * An earlier finished run of the same job: same printer, same title, planned time within
+ * 10 % (at least 5 min). Jobs of the same name differ per plate (6.7 g / 33 min up to
+ * 237 g / 632 min for one "Oberschale"), so the time is what tells the plate apart.
+ */
+export function templateCloudTask(tasks: CloudTask[], c: TemplateCriteria): CloudTask | null {
+  if (!(c.estimatedMin > 0) || !c.title) return null;
+  const title = normTitle(c.title);
+  const tol = Math.max(0.1 * c.estimatedMin, 5);
+  const fits = tasks.filter(t => t.deviceId.toUpperCase() === c.serial.toUpperCase() && t.status === 2
+    && normTitle(t.title) === title && t.costTime != null && Math.abs(t.costTime / 60 - c.estimatedMin) <= tol
+    && (t.startTime ?? 0) < c.before && t.ams.length > 0);
+  fits.sort((a, b) => (b.startTime ?? 0) - (a.startTime ?? 0));
+  return fits[0] ?? null;
+}
+
 const trayUuidOf = (slots: AmsSlot[], idx: number): string | null => {
   if (idx === EXTERNAL_SLOT) return null;
   return slots.find(s => slotIndex(s.ams_unit, s.slot) === idx)?.tray_uuid ?? null;
@@ -140,18 +170,24 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  * Material lines from a cloud task. `fraction` < 1 (failed/cancelled job) scales the
  * slicer weights by the share printed, like the slicer-file path does.
  */
-export function cloudTaskLines(task: CloudTask, slots: AmsSlot[], fraction: number | null = null): MaterialLine[] {
+export function cloudTaskLines(
+  task: CloudTask, slots: AmsSlot[], fraction: number | null = null,
+  opts: { template?: boolean; activeSlot?: number | null } = {},
+): MaterialLine[] {
   const partial = fraction != null && fraction < 1;
   const lines: MaterialLine[] = [];
+  // A template's single filament was printed from whatever slot it sat in back then; this
+  // run used the slot the printer reported as active.
+  const single = task.ams.length === 1 && opts.template && opts.activeSlot != null ? opts.activeSlot : null;
   for (const u of task.ams) {
-    const idx = cloudSlot(u.ams);
+    const idx = single ?? cloudSlot(u.ams);
     if (idx == null) continue;
     const grams = round2(u.weight * (partial ? Math.max(0, fraction!) : 1));
     if (grams <= 0) continue;
     lines.push({
       filamentIndex: idx, grams, color: u.color, filament_type: u.filamentType ?? null,
       slotRef: { source: 'ams', value: idx },
-      measureSource: partial ? 'estimated_partial' : 'bambu_cloud',
+      measureSource: partial ? 'estimated_partial' : opts.template ? 'template' : 'bambu_cloud',
       estimated_grams: round2(u.weight),
       tray_uuid: trayUuidOf(slots, idx),
     });

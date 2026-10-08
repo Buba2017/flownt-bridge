@@ -44,6 +44,8 @@ export interface PendingMaterial {
   finishedAt: number;
   /** Share printed for failed/cancelled jobs (scales full-job weights), null if complete. */
   fraction: number | null;
+  /** Planned print time in minutes (finds earlier runs of the same job as template). */
+  estimatedMin?: number | null;
   mapping: number[];
   activeSlot: number | null;
   amsSlots: AmsSlot[];

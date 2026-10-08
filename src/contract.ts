@@ -134,10 +134,13 @@ export interface MaterialLine {
    * - `slicer_file` / `bambu_cloud`: full usage of a finished job.
    * - `estimated_partial`: a failed/cancelled job; slicer grams scaled by the progress
    *   reached (`estimated_grams` holds the unscaled slicer value).
+   * - `template`: slicer grams of an earlier run of the same job (same printer, same name,
+   *   planned time within 10 %), e.g. from the Bambu Cloud history (contract ≥ 3).
    * - `ams_remain`: estimate from the drop of the RFID remaining-% between job start and end
-   *   times the spool's nominal weight (contract ≥ 3; resolution about 1 % of the spool).
+   *   times the spool's nominal weight (contract ≥ 3). Coarse: only used when nothing else is
+   *   known, the backend replaces it with a template where one exists.
    */
-  measureSource: 'slicer_file' | 'bambu_cloud' | 'estimated_partial' | 'ams_remain';
+  measureSource: 'slicer_file' | 'bambu_cloud' | 'estimated_partial' | 'ams_remain' | 'template';
   /** Slicer estimate for the whole job in g (contract ≥ 2). */
   estimated_grams?: number;
   /**

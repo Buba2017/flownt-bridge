@@ -8,7 +8,7 @@ import { addEvent } from './events.js';
 import { defaultSender, Enricher, getOutbox, Outbox, PendingMaterial, Sender } from './outbox.js';
 import { JobEnd, JobSession, JobSessionStore, JobTracker } from './job-session.js';
 import { EXTERNAL_SLOT, isTrackedSlot, MaterialContext, ResolvedLine, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
-import { amsRemainLines, cloudTaskLines, matchCloudTask } from './material-sources.js';
+import { amsRemainLines, cloudTaskLines, matchCloudTask, templateCloudTask } from './material-sources.js';
 import { cloudSourceFor } from './cloud-sources.js';
 import type { CloudTaskSource } from './bambu-cloud.js';
 
@@ -150,6 +150,8 @@ export function buildTerminalBody(
   body.outcome = end.outcome;
   if (s.lastProgressPct != null) body.last_progress_pct = s.lastProgressPct;
   if (eventType === 'job_failed') body.failure_reason = failureReason(s);
+  // Slot the job printed from (the backend uses it for templates of single-filament jobs).
+  if (s.lastActiveSlot != null) body.ams_active_slot = s.lastActiveSlot;
 
   // AMS state as seen during the job (the live one may already belong to the next job).
   const jobSlots: AmsSlot[] = s.amsSlots.length ? s.amsSlots : snapshot.amsSlots ?? [];
@@ -180,6 +182,7 @@ export function buildTerminalBody(
         printFile: s.printFile, plateIndex: s.plateIndex ?? null, fileUnreadable: !canRefetch,
         serial: cfg.adapterSerial || undefined, jobIds: ids, startedAt: s.startedAt, finishedAt: end.finishedAt,
         fraction, mapping: s.filamentMapping, activeSlot: s.lastActiveSlot, amsSlots: jobSlots, fallback,
+        estimatedMin: s.estimatedDurationMin,
       },
     };
   }
@@ -214,6 +217,17 @@ export function materialEnricher(
         const lines = cloudTaskLines(task, pm.amsSlots, pm.fraction);
         if (lines.length) return { lines, source: 'Bambu Cloud' };
       }
+      // Not a cloud job (sent over LAN, reprinted on the display): an earlier cloud run of
+      // the same plate gives its slicer weight.
+      const tpl = tasks && pm.estimatedMin && pm.printFile && templateCloudTask(tasks, {
+        serial: pm.serial, title: pm.printFile, estimatedMin: pm.estimatedMin, before: pm.startedAt,
+      });
+      if (tpl) {
+        const lines = cloudTaskLines(tpl, pm.amsSlots, pm.fraction, { template: true, activeSlot: pm.activeSlot });
+        if (lines.length) return { lines, source: 'früherer gleicher Auftrag (Bambu Cloud)' };
+      }
+      // The cloud answered: nothing more to expect from waiting.
+      if (tasks && pm.fileUnreadable) return 'exhausted';
     }
     return null;
   };
