@@ -139,6 +139,9 @@ export class JobTracker {
     const key = snapshotJobKey(snap);
     const s = this.session;
     if (s) {
+      // A session that turns out to be a printer routine (started by an older bridge
+      // before routines were recognised): dropped, no print log.
+      if (snap.systemJob && (key == null || key === s.jobKey)) { this.endJob(); return {}; }
       const sameJob = key == null || key === s.jobKey;
       if (sameJob) {
         this.absorb(s, snap);

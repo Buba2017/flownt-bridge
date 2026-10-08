@@ -82,6 +82,14 @@ test('printer routines (calibration after setup) are no print jobs', async () =>
   assert.deepEqual(tracker.observe(s, null), {});
   assert.equal(tracker.session, null);
 
+  // A session saved for the routine by an older bridge is dropped without a log.
+  const store = new JobSessionStore(mkdtempSync(join(tmpdir(), 'flownt-jobs-')));
+  const legacy = new JobTracker('p2', store, () => 1_000);
+  assert.ok(legacy.observe({ ...s, systemJob: undefined }, null).started);
+  assert.deepEqual(legacy.observe(s, null), {});
+  assert.equal(legacy.session, null);
+  assert.equal(new JobTracker('p2', store, () => 2_000).session, null, 'removed from disk too');
+
   // The next real print starts a job as usual.
   a.handleMessage(JSON.stringify({ print: { command: 'push_status', gcode_state: 'FINISH' } }));
   a.handleMessage(JSON.stringify({ print: {
