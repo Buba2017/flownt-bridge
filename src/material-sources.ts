@@ -99,7 +99,10 @@ export function cloudSlot(tray: number): number | null {
   return null;
 }
 
-const normTitle = (s: string) => s.toLowerCase().replace(/\.(gcode\.)?3mf$/i, '').replace(/[\s_]+/g, ' ').trim();
+// Printers report a job name like "AMS 1 / 2 Pro Kit" as a path, and Flownt keeps only the
+// last segment as the print name, while the cloud title keeps the whole string: compare
+// the last segment on both sides.
+const normTitle = (s: string) => (s.split('/').pop() ?? s).toLowerCase().replace(/\.(gcode\.)?3mf$/i, '').replace(/[\s_]+/g, ' ').trim();
 
 export interface TaskCriteria {
   serial: string;

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AmsSlot } from '../src/adapters/types.js';
 import type { IngestBody, MaterialLine } from '../src/contract.js';
-import { amsRemainLines, cloudSlot, cloudTaskLines, matchCloudTask, parseCloudTasks } from '../src/material-sources.js';
+import { amsRemainLines, cloudSlot, cloudTaskLines, matchCloudTask, parseCloudTasks, templateCloudTask } from '../src/material-sources.js';
 import { Outbox, type PendingMaterial } from '../src/outbox.js';
 import { Clock, FakeBackend, tempDir } from './helpers/bridge.js';
 
@@ -257,4 +257,11 @@ test('job file: announce, upload to the signed URL, confirm; known content is on
   known = true;
   assert.equal(await uploadJobFile(send, cfg(), 'task:2@3', f, put), 'exists');
   assert.equal(puts.length, 1, 'no second upload of the same content');
+});
+
+test('cloud titles with a path prefix match the print name', () => {
+  const tasks = parseCloudTasks({ hits: [{ id: 9, deviceId: 'S1', title: 'AMS 1 / 2 Pro Kit (No Glue Needed)', status: 2, costTime: 36060,
+    startTime: '2026-10-06T15:37:10Z', cover: 'https://x/c.png', amsDetailMapping: [{ ams: 3, weight: 553.61, filamentType: 'PLA' }] }] });
+  const t = templateCloudTask(tasks, { serial: 'S1', title: '2 Pro Kit (No Glue Needed)', estimatedMin: 601, before: Date.parse('2026-10-08T00:00:00Z') });
+  assert.equal(t?.id, '9');
 });
