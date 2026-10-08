@@ -148,7 +148,8 @@ export class JobTracker {
       // Another job is on the printer: ours ended while we were not looking.
       return { ended: { session: s, outcome: inferOutcome(s), finishedAt: this.now(), seen: false } };
     }
-    if (!isActive(snap) || key == null) return {};
+    // Calibration and other printer routines are not prints.
+    if (!isActive(snap) || key == null || snap.systemJob) return {};
     const fromPrinter = snap.jobStartedAtS != null;
     const elapsedMs = fromPrinter ? null : adoptedElapsedMs(snap);
     const startedAt = fromPrinter ? snap.jobStartedAtS! * 1000 : this.now() - (elapsedMs ?? 0);

@@ -162,6 +162,16 @@ export function jobIdentity(p: PrintState): JobIdentity {
   return { key: null, sourceJobId: null };
 }
 
+/**
+ * The printer runs its own G-code (calibration after setup, nozzle cleaning …): Bambu
+ * reports print_type "system" and a firmware path such as /usr/etc/print/O1C2/holder_cali.gcode.
+ */
+export function isSystemJob(p: PrintState): boolean {
+  if (typeof p.print_type === 'string' && p.print_type.toLowerCase() === 'system') return true;
+  const file = typeof p.gcode_file === 'string' ? p.gcode_file : '';
+  return file.startsWith('/usr/etc/print/');
+}
+
 const ACTIVE = new Set(['PREPARE', 'SLICING', 'RUNNING', 'PAUSE']);
 const ENDED = new Set(['FINISH', 'FAILED', 'IDLE', '']);
 export const isActiveGcodeState = (s: string | undefined) => s !== undefined && ACTIVE.has(s.toUpperCase());

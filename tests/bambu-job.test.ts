@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BambuAdapter } from '../src/adapters/bambu.js';
-import { isNewJob, jobIdentity } from '../src/adapters/bambu-state.js';
+import { isNewJob, isSystemJob, jobIdentity } from '../src/adapters/bambu-state.js';
 import { json, loadFrame } from './helpers/fixtures.js';
 
 // Job identity: a new print is recognised by its id, not by a status edge.
@@ -56,4 +56,39 @@ test('job start without its own mapping drops the previous job\'s mapping', asyn
   const s = await a.getSnapshot();
   assert.equal(s.jobKey, 'task:999');
   assert.equal(s.filamentMapping, undefined);
+});
+
+test('printer routines (calibration after setup) are no print jobs', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { JobTracker, JobSessionStore } = await import('../src/job-session.js');
+  // Captured from a new H2C right after setup (fields trimmed).
+  const cali = { print: {
+    command: 'push_status', gcode_state: 'RUNNING', print_type: 'system', mc_percent: 30,
+    gcode_file: '/usr/etc/print/O1C2/holder_cali.gcode', subtask_name: 'holder_cali.gcode',
+    task_id: '3126', subtask_id: '0', job_id: '0',
+  } };
+  assert.equal(isSystemJob(cali.print), true);
+  assert.equal(isSystemJob({ print_type: 'local', gcode_file: '/data/Metadata/plate_1.gcode' }), false);
+  assert.equal(isSystemJob({ print_type: 'cloud', gcode_file: '/data/Metadata/plate_2.gcode' }), false);
+
+  const a = adapter();
+  a.handleMessage(JSON.stringify(cali));
+  const s = await a.getSnapshot();
+  assert.equal(s.status, 'printing');
+  assert.equal(s.systemJob, true);
+  const tracker = new JobTracker('p1', new JobSessionStore(mkdtempSync(join(tmpdir(), 'flownt-jobs-'))), () => 1_000);
+  assert.deepEqual(tracker.observe(s, null), {});
+  assert.equal(tracker.session, null);
+
+  // The next real print starts a job as usual.
+  a.handleMessage(JSON.stringify({ print: { command: 'push_status', gcode_state: 'FINISH' } }));
+  a.handleMessage(JSON.stringify({ print: {
+    command: 'push_status', gcode_state: 'RUNNING', print_type: 'local', gcode_file: '/data/Metadata/plate_1.gcode',
+    subtask_name: 'Oberschale', task_id: '4000',
+  } }));
+  const real = await a.getSnapshot();
+  assert.equal(real.systemJob, false);
+  assert.ok(tracker.observe(real, null).started);
 });

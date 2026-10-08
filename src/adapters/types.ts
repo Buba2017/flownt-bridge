@@ -76,6 +76,9 @@ export interface PrinterSnapshot {
   plateIndex?: number | null;
   /** The job's file sits in the printer's internal storage (not readable over FTPS). */
   fileInternal?: boolean;
+  /** The printer runs one of its own routines (calibration, cleaning), not a print: no
+   *  job session, no print log. */
+  systemJob?: boolean;
   powerW?: number | null;       // aktuelle Wirkleistung vom Smart-Plug (Shelly), falls konfiguriert
   energyWhUsed?: number | null; // gemessener Energieverbrauch des Drucks in Wh (Zähler Ende − Start)
 }

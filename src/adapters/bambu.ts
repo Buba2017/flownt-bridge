@@ -3,7 +3,7 @@ import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAler
 import { extractPlatePreview, parseFileBuffer, parseSlicePrediction } from './bambu-file-parser.js';
 import { DirEntry, FtpsError, FtpsOptions, FtpsSession, ftpsPausedUntil, withFtps } from './ftps.js';
 import { addEvent } from '../events.js';
-import { isActiveGcodeState, isNewJob, isTelemetry, jobIdentity, mergePrintState, nonZeroId, PrintState, toInt } from './bambu-state.js';
+import { isActiveGcodeState, isNewJob, isSystemJob, isTelemetry, jobIdentity, mergePrintState, nonZeroId, PrintState, toInt } from './bambu-state.js';
 
 interface BambuAmsTray {
   id?: string | number;
@@ -634,7 +634,7 @@ export class BambuAdapter implements Adapter {
 
     // Bei Druckstart (oder laufendem Druck nach Bridge-Start): Druckdatei via FTPS
     // laden und parsen — einmal je Job.
-    if (this.jobKey && this.snapshot.printFile && (newStatus === 'printing' || newStatus === 'paused')) {
+    if (this.jobKey && this.snapshot.printFile && !this.snapshot.systemJob && (newStatus === 'printing' || newStatus === 'paused')) {
       this.maybeFetchPrintFile(this.jobKey, this.snapshot.printFile);
     }
   }
@@ -681,6 +681,7 @@ export class BambuAdapter implements Adapter {
       jobIds: rawJobIds(st),
       plateIndex: this.plateIndex ?? null,
       fileInternal: st.subtask_name ? this.isInternalStorageJob(st.subtask_name) : undefined,
+      systemJob: isSystemJob(st),
       parsedFilamentWeights: isNewPrint ? null : prev.parsedFilamentWeights,
       printPreview: isNewPrint ? null : prev.printPreview,
       estimatedDurationMin: isNewPrint ? null : prev.estimatedDurationMin,
