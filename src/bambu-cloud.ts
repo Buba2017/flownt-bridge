@@ -104,21 +104,34 @@ export class BambuCloudSession implements CloudTaskSource {
     return this.refreshing;
   }
 
-  async listTasks(serial: string): Promise<CloudTask[] | null> {
+  /** Runs an authenticated call, renewing the session before the expiry and after a 401. */
+  private async authed<T>(what: string, call: (token: string) => Promise<{ status: number; value: T }>): Promise<T | null> {
     try {
       // Renew a day before the expiry instead of waiting for the 401.
       if (this.token.expiresAt && this.token.expiresAt - Date.now() < 24 * 3_600_000) await this.refresh();
-      let r = await fetchTasks(this.token.accessToken, serial);
-      if (r.status === 401 && await this.refresh()) r = await fetchTasks(this.token.accessToken, serial);
+      let r = await call(this.token.accessToken);
+      if (r.status === 401 && await this.refresh()) r = await call(this.token.accessToken);
       if (r.status < 200 || r.status >= 300) {
-        console.warn(`[bambu-cloud] task history ${r.status}`);
+        console.warn(`[bambu-cloud] ${what} ${r.status}`);
         return null;
       }
-      return r.tasks;
+      return r.value;
     } catch (err) {
-      console.warn('[bambu-cloud] task history error:', (err as Error).message);
+      console.warn(`[bambu-cloud] ${what} error:`, (err as Error).message);
       return null;
     }
+  }
+
+  listTasks(serial: string): Promise<CloudTask[] | null> {
+    return this.authed('task history', async token => {
+      const r = await fetchTasks(token, serial);
+      return { status: r.status, value: r.tasks };
+    });
+  }
+
+  /** Printers bound to the account, with their LAN access codes; null on failure. */
+  listDevices(): Promise<CloudDevice[] | null> {
+    return this.authed('device list', token => requestBoundDevices(token));
   }
 }
 
@@ -233,18 +246,27 @@ export async function cloudLoginWithTfa(tfaKey: string, code: string): Promise<C
   return stepFrom(data);
 }
 
-export async function fetchBoundDevices(token: string): Promise<CloudDevice[]> {
+async function requestBoundDevices(token: string): Promise<{ status: number; value: CloudDevice[] }> {
   const res = await fetch('https://api.bambulab.com/v1/iot-service/api/user/bind', {
     headers: { ...HEADERS, Authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(15_000),
   });
-  if (!res.ok) throw new Error(`Bambu Cloud ${res.status}`);
+  if (!res.ok) return { status: res.status, value: [] };
   const data = await res.json() as { devices?: Array<Record<string, unknown>> };
-  return (data.devices ?? []).map(d => ({
-    serial: String(d.dev_id ?? ''),
-    name: String(d.name ?? ''),
-    model: String(d.dev_product_name ?? d.dev_model_name ?? ''),
-    accessCode: String(d.dev_access_code ?? ''),
-    online: d.online === true,
-  })).filter(d => d.serial);
+  return {
+    status: res.status,
+    value: (data.devices ?? []).map(d => ({
+      serial: String(d.dev_id ?? ''),
+      name: String(d.name ?? ''),
+      model: String(d.dev_product_name ?? d.dev_model_name ?? ''),
+      accessCode: String(d.dev_access_code ?? ''),
+      online: d.online === true,
+    })).filter(d => d.serial),
+  };
+}
+
+export async function fetchBoundDevices(token: string): Promise<CloudDevice[]> {
+  const r = await requestBoundDevices(token);
+  if (r.status < 200 || r.status >= 300) throw new Error(`Bambu Cloud ${r.status}`);
+  return r.value;
 }

@@ -7,6 +7,7 @@ import { publicKeyPem, decryptSecret } from './keys.js';
 import { discoveredDevices, discoveredIp } from './discovery.js';
 import { RemovalGuard, type PendingRemoval } from './removal-guard.js';
 import { addTombstone, pruneTombstones, takeTombstone } from './tombstones.js';
+import { fillFromCloud } from './cloud-codes.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('link');
@@ -229,6 +230,8 @@ async function syncOnce(cb: LinkCallbacks): Promise<void> {
   reconcile(res, cb);
   lastSyncAt = new Date();
   lastSyncError = null;
+  // Printers added after the Bambu Lab sign-in: codes from the account's device list.
+  await fillFromCloud(cb.onUpdate).catch(e => log.warn(`Bambu Cloud: ${(e as Error).message}`));
 }
 
 let loopStarted = false;

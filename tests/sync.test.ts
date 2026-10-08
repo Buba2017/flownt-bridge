@@ -183,3 +183,72 @@ test('a Bambu Cloud token arrives in the hybrid envelope and is stored on the pr
   assert.equal(p.adapterApiKey, `code-${PRINTERS[0].printer_id}`, 'access code untouched');
   assert.deepEqual(calls.update, [], 'a new cloud session does not reconnect the printer');
 });
+
+// ── access codes from the Bambu Cloud device list ──────────────────────────────
+
+const { fillFromCloud, resetCloudLookups, CLOUD_LOOKUP_RETRY_MS } = await import('../src/link/cloud-codes.js');
+const { saveMultiConfig } = await import('../src/config.js');
+
+function seedWithNewPrinter() {
+  seedConfig();
+  const cfg = loadMultiConfig();
+  cfg.printers[0].bambuCloudToken = { accessToken: 'tok', refreshToken: 'ref' };
+  cfg.printers.push({
+    id: 'local-4', name: 'P-f4', flowntAuthToken: 'f4000000-0000-4000-8000-000000000000', adapterType: 'bambu',
+    adapterUrl: '10.0.0.4', adapterApiKey: '', adapterSerial: 's4', pollingIntervalMs: 30000,
+    flowntPrinterId: 'f4', managed: true,
+  });
+  saveMultiConfig(cfg);
+  resetCloudLookups();
+}
+
+function fakeAccount(devices: Array<{ serial: string; accessCode: string }>) {
+  const lister = {
+    calls: 0,
+    current: { accessToken: 'tok', refreshToken: 'ref' },
+    async listDevices() {
+      lister.calls++;
+      return devices.map(d => ({ ...d, name: d.serial, model: 'H2C', online: true }));
+    },
+  };
+  return lister;
+}
+
+test('a printer added after the cloud sign-in gets its code and session from the account', async () => {
+  seedWithNewPrinter();
+  const account = fakeAccount([{ serial: 'S1', accessCode: 'x' }, { serial: 'S4', accessCode: 'code4' }]);
+  const updated: string[] = [];
+  const n = await fillFromCloud(p => updated.push(p.flowntPrinterId!), {
+    now: () => 0, sessionFor: p => (p.bambuCloudToken ? account : null),
+  });
+  const cfg = loadMultiConfig();
+  const p4 = cfg.printers.find(p => p.flowntPrinterId === 'f4')!;
+  assert.equal(p4.adapterApiKey, 'code4');
+  assert.equal(p4.bambuCloudToken?.refreshToken, 'ref');
+  assert.deepEqual(updated, ['f4'], 'only the printer that got a code reconnects');
+  // f2 is not in this account: left alone.
+  assert.equal(cfg.printers.find(p => p.flowntPrinterId === 'f2')!.adapterApiKey, 'code-f2');
+  assert.equal(n, 1, 'S2/S3 are not in this account');
+});
+
+test('a printer the account does not know is looked up again only after the retry interval', async () => {
+  seedWithNewPrinter();
+  const account = fakeAccount([{ serial: 'S1', accessCode: 'x' }]);
+  let now = 0;
+  const deps = { now: () => now, sessionFor: (p: import('../src/config.js').PrinterConfig) => (p.bambuCloudToken ? account : null) };
+  assert.equal(await fillFromCloud(() => {}, deps), 0);
+  assert.equal(await fillFromCloud(() => {}, deps), 0);
+  assert.equal(account.calls, 1);
+  now += CLOUD_LOOKUP_RETRY_MS;
+  await fillFromCloud(() => {}, deps);
+  assert.equal(account.calls, 2);
+  assert.equal(loadMultiConfig().printers.find(p => p.flowntPrinterId === 'f4')!.adapterApiKey, '');
+});
+
+test('without any cloud session nothing is looked up', async () => {
+  seedConfig();
+  resetCloudLookups();
+  const account = fakeAccount([]);
+  assert.equal(await fillFromCloud(() => {}, { now: () => 0, sessionFor: () => account }), 0);
+  assert.equal(account.calls, 0);
+});
