@@ -258,6 +258,8 @@ export interface LinkedPrinterState {
   printer_id: string;
   has_access_code: boolean;
   connected: boolean;
+  /** The bridge holds a Bambu Cloud session for this printer (cloud task history; optional). */
+  has_cloud_token?: boolean;
 }
 
 export interface BridgeSyncRequest {

@@ -154,9 +154,11 @@ export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: Rem
       // Cloud session for the task history (material of jobs whose file is unreadable).
       try {
         const token = parseCloudToken(decryptSecret(s.ciphertext));
+        // Saved only: the printer connection does not depend on it (the material lookup
+        // reads the current config), so no reconnect of the printer.
         if (local && token && JSON.stringify(local.bambuCloudToken) !== JSON.stringify(token)) {
           local.bambuCloudToken = token;
-          if (!added.includes(local) && !updated.includes(local)) updated.push(local);
+          dirty = true;
         }
       } catch (e) {
         log.error(`Secret ${s.id} nicht entschlüsselbar: ${(e as Error).message}`);
@@ -208,7 +210,10 @@ async function syncOnce(cb: LinkCallbacks): Promise<void> {
   if (!cfg.link) return;
   const printers: LinkedPrinterState[] = cfg.printers
     .filter(p => p.flowntPrinterId)
-    .map(p => ({ printer_id: p.flowntPrinterId!, has_access_code: !needsAccessCode(p), connected: cb.isConnected(p.id) }));
+    .map(p => ({
+      printer_id: p.flowntPrinterId!, has_access_code: !needsAccessCode(p), connected: cb.isConnected(p.id),
+      has_cloud_token: !!p.bambuCloudToken?.accessToken,
+    }));
   const acked = ackQueue;
   const req: BridgeSyncRequest = {
     action: 'sync', bridge_token: cfg.link.bridgeToken, bridge_version: BRIDGE_VERSION,

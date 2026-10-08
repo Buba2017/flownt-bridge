@@ -181,5 +181,5 @@ test('a Bambu Cloud token arrives in the hybrid envelope and is stored on the pr
   assert.equal(p.bambuCloudToken?.refreshToken, 'r'.repeat(300));
   assert.equal(p.bambuCloudToken?.expiresAt, Date.parse('2027-01-05T00:00:00Z'));
   assert.equal(p.adapterApiKey, `code-${PRINTERS[0].printer_id}`, 'access code untouched');
-  assert.deepEqual(calls.update, [PRINTERS[0].printer_id]);
+  assert.deepEqual(calls.update, [], 'a new cloud session does not reconnect the printer');
 });

@@ -53,6 +53,6 @@ export async function runSteps(
   const outbox = opts.outbox ?? new Outbox(join(opts.dir, 'outbox.json'), opts.backend.send, opts.clock.now);
   await runBridge(adapter, cfg(opts.printerId), state, () => i >= steps.length, {
     send: opts.backend.send, outbox, sessions: new JobSessionStore(join(opts.dir, 'jobs')),
-    now: opts.clock.now, sleep: opts.clock.sleep,
+    now: opts.clock.now, sleep: opts.clock.sleep, currentConfig: () => cfg(opts.printerId),
   });
 }

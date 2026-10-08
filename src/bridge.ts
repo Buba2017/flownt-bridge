@@ -1,4 +1,4 @@
-import { PrinterConfig } from './config.js';
+import { loadMultiConfig, PrinterConfig } from './config.js';
 import type { PrinterBridgeState } from './server.js';
 import { Adapter, AmsSlot, FilamentWeight, PrinterSnapshot } from './adapters/types.js';
 import { CONTRACT_VERSION, EventType, IngestBody, MaterialLine } from './contract.js';
@@ -233,7 +233,9 @@ export async function runBridge(
   console.log(`[${cfg.name}] Verbindung wird aufgebaut…`);
 
   const cloudFor = deps.cloudSource ?? cloudSourceFor;
-  const getCfg = deps.currentConfig ?? (() => cfg);
+  // Current config (e.g. a Bambu Cloud session delivered after the start), not the one
+  // this loop was started with.
+  const getCfg = deps.currentConfig ?? (() => loadMultiConfig().printers.find(p => p.id === cfg.id) ?? cfg);
   const enricher = materialEnricher(adapter, getCfg, cloudFor);
   outbox.setEnricher(cfg.id, enricher);
 
