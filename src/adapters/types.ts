@@ -26,6 +26,9 @@ export interface JobIds {
   jobId?: string;
 }
 
+/** A job's print file as downloaded from the printer (stored for the print log). */
+export interface JobFile { printFile: string; fileName: string; buf: Buffer }
+
 /** Result of reading a finished job's print file again (after the job ended). */
 export type JobFileResult =
   | { kind: 'ok'; weights: FilamentWeight[] }
@@ -94,6 +97,8 @@ export interface Adapter {
   /** Reads a job's print file again after the job ended (weights only, no preview); used
    *  when the fetch during the print failed. Adapters without print files omit it. */
   refetchJobWeights?(printFile: string, plateIndex: number | null): Promise<JobFileResult>;
+  /** The print file downloaded for the current job since the last call (then cleared). */
+  takeJobFile?(): JobFile | null;
   /** Ressourcen freigeben (MQTT-Client, Timer) — MUSS bei Config-Änderung/Löschen
    *  aufgerufen werden, sonst laufen alte Verbindungen als Geister weiter. */
   dispose?(): void;

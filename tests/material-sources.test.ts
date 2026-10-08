@@ -235,3 +235,26 @@ test('preview: the cloud task\'s plate thumbnail for a job without a file previe
   assert.equal(Buffer.from(previews[0]!.png_base64, 'base64').equals(png), true);
   assert.deepEqual(fetched, ['https://example.com/plate.png']);
 });
+
+test('job file: announce, upload to the signed URL, confirm; known content is only linked', async () => {
+  const { uploadJobFile } = await import('../src/job-files.js');
+  const { cfg } = await import('./helpers/bridge.js');
+  const buf = Buffer.from('PK\x03\x04 fake 3mf');
+  const sent: Array<Record<string, unknown>> = [];
+  let known = false;
+  const send = async (b: IngestBody) => {
+    sent.push(b.job_file as unknown as Record<string, unknown>);
+    if (b.job_file?.done) return { status: 200, data: { status: 'stored' } };
+    return { status: 200, data: known ? { status: 'exists' } : { status: 'upload', upload_url: 'https://x/upload?token=t' } };
+  };
+  const puts: string[] = [];
+  const put = async (u: string, b: Buffer) => { puts.push(`${u} ${b.length}`); return 200; };
+  const f = { printFile: 'Box', fileName: 'Box.gcode.3mf', buf };
+  assert.equal(await uploadJobFile(send, cfg(), 'task:1@2', f, put), 'stored');
+  assert.deepEqual(puts, [`https://x/upload?token=t ${buf.length}`]);
+  assert.equal(sent[0].sha256, (await import('node:crypto')).createHash('sha256').update(buf).digest('hex'));
+  assert.equal(sent[1].done, true);
+  known = true;
+  assert.equal(await uploadJobFile(send, cfg(), 'task:2@3', f, put), 'exists');
+  assert.equal(puts.length, 1, 'no second upload of the same content');
+});

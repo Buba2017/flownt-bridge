@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAlert, JobFileResult, JobIds, JobResult, JobState, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
+import { Adapter, AmsHumidityUnit, AmsSlot, AmsUnitInfo, FilamentWeight, HmsAlert, JobFile, JobFileResult, JobIds, JobResult, JobState, PrinterCommand, PrinterSnapshot, PrinterStatus } from './types.js';
 import { extractPlatePreview, parseFileBuffer, parseSlicePrediction } from './bambu-file-parser.js';
 import { DirEntry, FtpsError, FtpsOptions, FtpsSession, ftpsPausedUntil, withFtps } from './ftps.js';
 import { addEvent } from '../events.js';
@@ -749,6 +749,14 @@ export class BambuAdapter implements Adapter {
     }
   }
 
+  private pendingJobFile: JobFile | null = null;
+
+  takeJobFile(): JobFile | null {
+    const f = this.pendingJobFile;
+    this.pendingJobFile = null;
+    return f;
+  }
+
   /** The printer echoed the print start with a file in its internal storage (X2D/H2C). */
   private isInternalStorageJob(printFile: string): boolean {
     const pf = this.lastProjectFile;
@@ -784,6 +792,7 @@ export class BambuAdapter implements Adapter {
       return 'missing';
     }
     const weights = this.applyPrintFile(name, hit.path, hit.buf);
+    this.pendingJobFile = { printFile: name, fileName: hit.path.split('/').pop() ?? `${name}.gcode.3mf`, buf: hit.buf };
     console.log(`[bambu] Druckdatei geladen: ${hit.path} → ${weights.length} Filament(e) geparst`);
     addEvent(this.printerId, 'success', `Druckdatei geladen: ${hit.path.split('/').pop()} (${weights.length} Slot(s))`);
     return 'ok';

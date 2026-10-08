@@ -27,7 +27,7 @@
 export const CONTRACT_VERSION = 3;
 
 /** Kanonische Event-Typen, die die Bridge an Flownt sendet. */
-export type EventType = 'heartbeat' | 'status_update' | 'job_complete' | 'job_failed';
+export type EventType = 'heartbeat' | 'status_update' | 'job_complete' | 'job_failed' | 'job_file';
 
 /**
  * Drucker-Status auf Adapter-/Snapshot-Ebene. Hinweis zur Wire-Ebene: die Bridge mappt
@@ -151,6 +151,32 @@ export interface MaterialLine {
   tray_uuid?: string | null;
 }
 
+/**
+ * Print file of a job (Bambu .gcode.3mf from the SD card), stored for the print log
+ * (contract ≥ 3). Two steps through bridge-ingest with event_type 'job_file':
+ *   1. announce it (`done` absent): Flownt answers `exists` (same content stored already,
+ *      it is linked to the job) or `upload` with a signed URL the bridge PUTs the file to;
+ *   2. after the upload, the same body with `done: true` links the stored file to the job.
+ * Files are keyed by SHA-256, so a plate printed again is stored once per printer.
+ */
+export interface JobFileRef {
+  source_job_id: string;
+  file_name: string;
+  /** Lower-case hex SHA-256 of the file. */
+  sha256: string;
+  size_bytes: number;
+  done?: boolean;
+}
+
+export interface JobFileResponse {
+  status: 'exists' | 'upload' | 'stored' | 'too_large';
+  /** Absolute URL for an HTTP PUT of the file (status 'upload'). */
+  upload_url?: string;
+}
+
+/** Largest print file Flownt stores. */
+export const JOB_FILE_MAX_BYTES = 50 * 1024 * 1024;
+
 /** How a job ended (contract ≥ 2). */
 export type JobOutcome = 'completed' | 'failed' | 'cancelled';
 
@@ -219,6 +245,8 @@ export interface IngestBody {
    * missing" instead of silently booking 0 g.
    */
   material_unknown?: boolean;
+  /** event_type 'job_file' only (contract ≥ 3). */
+  job_file?: JobFileRef;
 }
 
 // ── Bridge link (bridge-sync): pairing, central configuration, discovery ──────────

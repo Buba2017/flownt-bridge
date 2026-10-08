@@ -10,6 +10,7 @@ import { JobEnd, JobSession, JobSessionStore, JobTracker } from './job-session.j
 import { EXTERNAL_SLOT, isTrackedSlot, MaterialContext, ResolvedLine, resolveMaterials, slotIndex, slotLabel } from './job-materials.js';
 import { amsRemainLines, cloudTaskLines, matchCloudTask, previewTask, templateCloudTask } from './material-sources.js';
 import { cloudSourceFor } from './cloud-sources.js';
+import { uploadJobFile } from './job-files.js';
 import type { CloudTaskSource } from './bambu-cloud.js';
 
 /** How long a job end without usage figures waits for the file / cloud lookup. */
@@ -353,6 +354,19 @@ export async function runBridge(
       if (active != null && isTrackedSlot(active) && active !== lastLoggedSlot) {
         lastLoggedSlot = active;
         addEvent(cfg.id, 'info', `Aktiver Filament-Slot: ${slotLabel(active)}`);
+      }
+
+      // Print file downloaded for this job: store it in Flownt for the print log (background).
+      const jobFile = adapter.takeJobFile?.();
+      const fileSession = tracker.session;
+      if (jobFile && fileSession && jobFile.printFile === fileSession.printFile) {
+        const jobId = fileSession.sourceJobId;
+        void uploadJobFile(send, cfg, jobId, jobFile)
+          .then(r => {
+            if (r === 'stored') addEvent(cfg.id, 'info', `Druckdatei in Flownt gespeichert: ${jobFile.fileName}`);
+            else if (r === 'failed') console.warn(`[${cfg.name}] print file not stored: ${jobFile.fileName}`);
+          })
+          .catch(e => console.warn(`[${cfg.name}] print file upload:`, (e as Error).message));
       }
 
       // No preview from the print file: the plate thumbnail of the cloud task.
