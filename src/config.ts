@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, chmodSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, chmodSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -77,33 +77,89 @@ function migrate(raw: Record<string, unknown>): MultiConfig {
   };
 }
 
+const DEFAULT_POLLING_MS = 30_000;
+const MIN_POLLING_MS = 5_000;
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+// Hand-edited files: an access code written as a number is still the code.
+const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
+const optStr = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+
+/**
+ * Brings a v2 config read from disk (possibly edited by hand) into the shape the code
+ * relies on: string fields are strings, optional strings are strings or absent, the
+ * polling interval is usable (0 or missing made the bridge loop spin; at least 5 s),
+ * lists are lists.
+ * Unknown adapter types stay: index.ts reports them as that printer's error.
+ */
+export function normalizeConfig(raw: Record<string, unknown>): MultiConfig {
+  const printers = (Array.isArray(raw.printers) ? raw.printers : []).filter(isObj).map((p, i) => {
+    const polling = Number(p.pollingIntervalMs);
+    const out: PrinterConfig = {
+      ...(p as unknown as PrinterConfig),
+      id: str(p.id) || `printer-${i + 1}`,
+      name: str(p.name),
+      flowntAuthToken: str(p.flowntAuthToken),
+      adapterUrl: str(p.adapterUrl),
+      adapterApiKey: str(p.adapterApiKey),
+      adapterSerial: str(p.adapterSerial),
+      pollingIntervalMs: Number.isFinite(polling) && polling > 0 ? Math.max(polling, MIN_POLLING_MS) : DEFAULT_POLLING_MS,
+    };
+    for (const k of ['bambuCloudEmail', 'bambuCloudPassword', 'smartPlugUrl'] as const) {
+      const v = optStr(p[k]);
+      if (v) out[k] = v; else delete out[k];
+    }
+    return out;
+  });
+  const cfg: MultiConfig = { ...(raw as unknown as MultiConfig), version: 2, language: raw.language === 'en' ? 'en' : 'de', printers };
+  const origins = Array.isArray(raw.allowedOrigins) ? raw.allowedOrigins.filter((o): o is string => typeof o === 'string') : [];
+  if (origins.length) cfg.allowedOrigins = origins; else delete cfg.allowedOrigins;
+  if (Array.isArray(raw.removedSecrets)) cfg.removedSecrets = raw.removedSecrets.filter(isObj) as unknown as MultiConfig['removedSecrets'];
+  else delete cfg.removedSecrets;
+  return cfg;
+}
+
 export function loadMultiConfig(): MultiConfig {
   if (!existsSync(CONFIG_FILE)) return { version: 2, language: 'de', printers: [] };
   let raw: Record<string, unknown>;
   try {
-    raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+    if (!isObj(parsed)) throw new Error('not a JSON object');
+    raw = parsed;
   } catch (e) {
-    // Never silently fall back to an empty config: the next save would overwrite
-    // the user's printers. Keep the broken file next to it and start empty.
+    // Never silently fall back to an empty config: the next save would overwrite the
+    // user's printers. Keep the broken file next to it and start empty. If it cannot be
+    // moved aside, stop here rather than run with an empty config that a save would
+    // write over the only copy.
     const backup = `${CONFIG_FILE}.corrupt-${Date.now()}`;
-    try { renameSync(CONFIG_FILE, backup); } catch { /* keep going */ }
+    try {
+      renameSync(CONFIG_FILE, backup);
+    } catch (moveErr) {
+      throw new Error(`config.json unreadable (${(e as Error).message}) and could not be moved aside (${(moveErr as Error).message}) — fix or remove ${CONFIG_FILE}`);
+    }
     console.error(`[flownt-bridge] config.json unreadable (${(e as Error).message}) — moved to ${backup}`);
     return { version: 2, language: 'de', printers: [] };
   }
-  if (raw.version === 2) return raw as unknown as MultiConfig;
+  if (raw.version === 2) return normalizeConfig(raw);
   // Legacy single-printer format → auto-migrate and persist
-  const cfg = migrate(raw);
+  const cfg = normalizeConfig(migrate(raw) as unknown as Record<string, unknown>);
   saveMultiConfig(cfg);
   return cfg;
 }
 
 export function saveMultiConfig(cfg: MultiConfig): void {
   // The file holds the Flownt token and printer access codes: owner-only
-  // permissions, and an atomic replace so a crash never leaves half a file.
+  // permissions, and an atomic replace so a crash never leaves half a file. Each save
+  // writes its own temp file, so two writers never interleave.
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  const tmp = `${CONFIG_FILE}.tmp`;
-  writeFileSync(tmp, JSON.stringify(cfg, null, 2), { encoding: 'utf-8', mode: 0o600 });
-  renameSync(tmp, CONFIG_FILE);
+  const tmp = `${CONFIG_FILE}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(cfg, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tmp, CONFIG_FILE);
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch { /* keep the original error */ }
+    throw e;
+  }
   try { chmodSync(CONFIG_FILE, 0o600); } catch { /* e.g. Windows */ }
 }
 
