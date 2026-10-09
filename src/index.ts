@@ -13,6 +13,12 @@ import { createLogger, enableFileLogging, installConsoleCapture, logFileFromArgs
 import { registerHealthProvider } from './health-registry.js';
 import { getOutbox, outboxStats } from './outbox.js';
 
+// Logging first: timestamps/levels for every console line, optional rotating log file.
+installConsoleCapture();
+const logFile = logFileFromArgs();
+if (logFile && enableFileLogging(logFile)) process.stdout.write(`[flownt-bridge] logging to ${logFile}\n`);
+const log = createLogger('flownt-bridge');
+
 // Job end events waiting for delivery to Flownt (persistent outbox) in /healthz.
 registerHealthProvider('outbox', () => {
   const s = outboxStats();
@@ -20,12 +26,6 @@ registerHealthProvider('outbox', () => {
 });
 // Queued job ends always go out with the printer's current Flownt token.
 getOutbox().setTokenResolver(id => loadMultiConfig().printers.find(p => p.id === id)?.flowntAuthToken ?? null);
-
-// Logging first: timestamps/levels for every console line, optional rotating log file.
-installConsoleCapture();
-const logFile = logFileFromArgs();
-if (logFile && enableFileLogging(logFile)) process.stdout.write(`[flownt-bridge] logging to ${logFile}\n`);
-const log = createLogger('flownt-bridge');
 
 // A rejected promise nobody awaited is a bug, but not worth dropping live printer
 // connections for: log it with its stack and keep running. An uncaught exception
