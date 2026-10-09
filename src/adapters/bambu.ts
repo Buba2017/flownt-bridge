@@ -720,7 +720,7 @@ export class BambuAdapter implements Adapter {
     if (pausedUntil) { state.nextAt = pausedUntil + 1_000; return; }
     state.attempts++;
     this.fetching = true;
-    this.fetchPrintFile(printFile)
+    this.fetchPrintFile(jobKey, printFile)
       .catch((err): FetchResult => { console.error('[bambu] fetchPrintFile:', err); return 'error'; })
       .then(result => {
         if (result !== 'error' || state.attempts >= FETCH_MAX_ATTEMPTS) {
@@ -770,7 +770,7 @@ export class BambuAdapter implements Adapter {
     return png ? { printFile, png } : null;
   }
 
-  private async fetchPrintFile(name: string): Promise<FetchResult> {
+  private async fetchPrintFile(jobKey: string, name: string): Promise<FetchResult> {
     console.log(`[bambu] FTPS: Lade Druckdatei "${name}"…`);
     let hit: { path: string; buf: Buffer } | null;
     try {
@@ -791,6 +791,12 @@ export class BambuAdapter implements Adapter {
         addEvent(this.printerId, 'warn', `Druckdatei nicht via FTPS gefunden: ${name}`);
       }
       return 'missing';
+    }
+    // The download can outlast the job: weights of an earlier job must not land on the
+    // next one (they would be booked for it).
+    if (this.jobKey !== jobKey) {
+      console.log(`[bambu] Print file of an earlier job arrived late, ignored: ${hit.path}`);
+      return 'ok';
     }
     const weights = this.applyPrintFile(name, hit.path, hit.buf);
     this.pendingJobFile = { printFile: name, fileName: hit.path.split('/').pop() ?? `${name}.gcode.3mf`, buf: hit.buf };

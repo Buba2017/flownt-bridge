@@ -174,3 +174,20 @@ test('file not on the card: looked for once per job, then left alone', async () 
     assert.equal(srv.commands.length, n);
   } finally { await srv.close(); }
 });
+
+test('a print file that arrives after the next job started is not used for it', async () => {
+  const srv = await startFakeFtps({ '/cache/Box.gcode.3mf': threeMf });
+  try {
+    const a = adapter(srv.port);
+    a.handleMessage(running('Box', '5'));
+    // The next job starts while the file of the first one is still downloading.
+    a.handleMessage(running('Clip', '6'));
+    await waitFor(() => srv.commands.includes('QUIT'), 5_000, 'download done');
+    await new Promise(r => setTimeout(r, 50));
+    const s = await a.getSnapshot();
+    assert.equal(s.jobKey, 'task:6');
+    assert.equal(s.parsedFilamentWeights, null);
+    assert.equal(s.printPreview, null);
+    assert.equal(a.takeJobFile(), null);
+  } finally { await srv.close(); }
+});
