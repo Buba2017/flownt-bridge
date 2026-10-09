@@ -96,6 +96,8 @@ export function redactConfig(cfg: MultiConfig): unknown {
       adapterApiKey: redact(p.adapterApiKey),
       bambuCloudPassword: redact(p.bambuCloudPassword),
       bambuCloudEmail: maskEmail(p.bambuCloudEmail),
+      // The Bambu Cloud session is account access: only whether it is there and when it expires.
+      bambuCloudToken: p.bambuCloudToken ? { accessToken: REDACTED, expiresAt: p.bambuCloudToken.expiresAt } : undefined,
     })),
     link: cfg.link ? { ...cfg.link, bridgeToken: REDACTED } : undefined,
     removedSecrets: cfg.removedSecrets?.map(t => ({ ...t, adapterApiKey: REDACTED })),
@@ -105,7 +107,8 @@ export function redactConfig(cfg: MultiConfig): unknown {
 /** Every secret value currently known to the bridge (for scrubbing free text). */
 export function knownSecrets(cfg: MultiConfig, env: NodeJS.ProcessEnv = process.env): string[] {
   const values = [
-    ...cfg.printers.flatMap(p => [p.flowntAuthToken, p.adapterApiKey, p.bambuCloudPassword]),
+    ...cfg.printers.flatMap(p => [p.flowntAuthToken, p.adapterApiKey, p.bambuCloudPassword,
+      p.bambuCloudToken?.accessToken, p.bambuCloudToken?.refreshToken]),
     cfg.link?.bridgeToken,
     ...(cfg.removedSecrets ?? []).map(t => t.adapterApiKey),
     env.FLOWNT_BRIDGE_ADMIN_PASSWORD, env.FLOWNT_PAIRING_CODE,

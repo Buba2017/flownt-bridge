@@ -19,6 +19,8 @@ const T2 = '22222222-2222-4222-8222-222222222222';
 const ACCESS_CODE = 'ac0de123';
 const CLOUD_PW = 'cloud-secret-pw';
 const MOON_KEY = 'moonraker-api-key-xyz';
+const CLOUD_ACCESS = 'bambu-cloud-access-token-123';
+const CLOUD_REFRESH = 'bambu-cloud-refresh-token-456';
 
 mkdirSync(join(home, '.flownt-bridge'), { recursive: true });
 writeFileSync(join(home, '.flownt-bridge', 'config.json'), JSON.stringify({
@@ -33,7 +35,7 @@ writeFileSync(join(home, '.flownt-bridge', 'config.json'), JSON.stringify({
 }));
 
 const { createApp, printerStates } = await import('../src/server.js');
-const { loadMultiConfig } = await import('../src/config.js');
+const { loadMultiConfig, saveMultiConfig } = await import('../src/config.js');
 
 const sent: Array<{ printer: string; cmd: unknown }> = [];
 for (const id of ['p1', 'p2']) {
@@ -256,6 +258,9 @@ test('/diagnostics.zip is redacted and refuses cross-site requests', async () =>
   const { unzipSync, strFromU8 } = await import('fflate');
   const { createLogger } = await import('../src/logger.js');
   createLogger('test').info(`leaky line token=${T1} rtsps://bblp:${ACCESS_CODE}@10.0.0.5:322/x Bearer abc.def`);
+  const stored = loadMultiConfig();
+  stored.printers[0].bambuCloudToken = { accessToken: CLOUD_ACCESS, refreshToken: CLOUD_REFRESH, expiresAt: 1 };
+  saveMultiConfig(stored);
   assert.equal((await fetch(`${base}/diagnostics.zip`, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   const res = await fetch(`${base}/diagnostics.zip`);
   assert.equal(res.status, 200);
@@ -264,10 +269,11 @@ test('/diagnostics.zip is redacted and refuses cross-site requests', async () =>
   assert.deepEqual(Object.keys(files).sort(), ['config.redacted.json', 'events.json', 'health.json', 'recent.log', 'versions.json']);
   for (const [name, data] of Object.entries(files)) {
     const text = strFromU8(data);
-    for (const secret of [T1, T2, ACCESS_CODE, CLOUD_PW, MOON_KEY, 'abc.def']) assert.ok(!text.includes(secret), `${name} leaks ${secret}`);
+    for (const secret of [T1, T2, ACCESS_CODE, CLOUD_PW, MOON_KEY, CLOUD_ACCESS, CLOUD_REFRESH, 'abc.def']) assert.ok(!text.includes(secret), `${name} leaks ${secret}`);
   }
   const cfg = JSON.parse(strFromU8(files['config.redacted.json']));
   assert.equal(cfg.printers[0].flowntAuthToken, '[redacted]');
   assert.equal(cfg.printers[0].adapterSerial, '00M000');
+  assert.deepEqual(cfg.printers[0].bambuCloudToken, { accessToken: '[redacted]', expiresAt: 1 });
   assert.match(strFromU8(files['recent.log']), /leaky line token=\[redacted\]/);
 });
