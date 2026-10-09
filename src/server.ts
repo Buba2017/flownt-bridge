@@ -931,14 +931,16 @@ export function parseForm(
       adapterUrl:        isBambu ? bambuUrl.trim() : isPrusa ? prusaUrl.trim() : moonrakerUrl.trim(),
       adapterApiKey:     isBambu ? bambuCode.trim() : isPrusa ? prusaKey.trim() : (moonrakerKey ?? '').trim(),
       adapterSerial:     isBambu ? bambuSerial.trim() : '',
-      pollingIntervalMs: 30_000,
+      pollingIntervalMs: existing?.pollingIntervalMs ?? 30_000,
       ...(isBambu ? { cameraTransport: cameraTransport === 'jpeg' || cameraTransport === 'rtsp' ? cameraTransport : 'auto' as const } : {}),
       ...(isBambu && bambuCloudEmail?.trim()    ? { bambuCloudEmail:    bambuCloudEmail.trim()    } : {}),
       ...(isBambu && bambuCloudPassword?.trim() ? { bambuCloudPassword: bambuCloudPassword.trim() } : {}),
       ...(shellyUrl?.trim() ? { smartPlugType: 'shelly' as const, smartPlugUrl: shellyUrl.trim() } : {}),
-      // Editing a printer assigned in Flownt keeps that link.
+      // Editing a printer assigned in Flownt keeps that link, and the Bambu Cloud session
+      // Flownt delivered (not part of the form).
       ...(existing?.flowntPrinterId ? { flowntPrinterId: existing.flowntPrinterId } : {}),
       ...(existing?.managed ? { managed: true } : {}),
+      ...(isBambu && existing?.bambuCloudToken ? { bambuCloudToken: existing.bambuCloudToken } : {}),
     },
   };
 }

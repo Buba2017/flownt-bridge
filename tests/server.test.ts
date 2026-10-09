@@ -28,7 +28,7 @@ writeFileSync(join(home, '.flownt-bridge', 'config.json'), JSON.stringify({
   printers: [
     { id: 'p1', name: 'X1C', flowntAuthToken: T1, adapterType: 'bambu', adapterUrl: '10.0.0.5', adapterApiKey: ACCESS_CODE,
       adapterSerial: '00M000', pollingIntervalMs: 30000, bambuCloudEmail: 'a@b.c', bambuCloudPassword: CLOUD_PW,
-      flowntPrinterId: 'f1', managed: true },
+      bambuCloudToken: { accessToken: CLOUD_ACCESS, refreshToken: CLOUD_REFRESH }, flowntPrinterId: 'f1', managed: true },
     { id: 'p2', name: 'Voron', flowntAuthToken: T2, adapterType: 'moonraker', adapterUrl: 'http://10.0.0.6',
       adapterApiKey: MOON_KEY, adapterSerial: '', pollingIntervalMs: 30000, flowntPrinterId: 'f2', managed: true },
   ],
@@ -164,7 +164,7 @@ test('setup POST without CSRF token, or cross-site, is refused', async () => {
 test('setup pages never contain stored secrets, and empty secret fields keep them', async () => {
   for (const id of ['p1', 'p2']) {
     const page = await (await fetch(`${base}/setup/${id}`)).text();
-    for (const secret of [T1, T2, ACCESS_CODE, CLOUD_PW, MOON_KEY]) assert.ok(!page.includes(secret), `${id} page leaks ${secret}`);
+    for (const secret of [T1, T2, ACCESS_CODE, CLOUD_PW, MOON_KEY, CLOUD_ACCESS, CLOUD_REFRESH]) assert.ok(!page.includes(secret), `${id} page leaks ${secret}`);
     assert.ok(page.includes('••••'));
   }
   const page = await (await fetch(`${base}/setup/p1`)).text();
@@ -181,6 +181,7 @@ test('setup pages never contain stored secrets, and empty secret fields keep the
   assert.equal(p1.bambuCloudPassword, CLOUD_PW);
   assert.equal(p1.flowntPrinterId, 'f1');
   assert.equal(p1.managed, true);
+  assert.deepEqual(p1.bambuCloudToken, { accessToken: CLOUD_ACCESS, refreshToken: CLOUD_REFRESH });
 });
 
 test('setup UI sends anti-framing headers', async () => {
