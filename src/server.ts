@@ -72,7 +72,7 @@ interface Tr {
   editPrinter: string; myPrinters: string; printerName: string;
   printerNamePlaceholder: string; printerType: string; authToken: string;
   authTokenHint: string; prefilledFromFlownt: string; ipAddress: string; serial: string;
-  serialPlaceholder: string; accessCode: string; accessCodeHint: string;
+  serialPlaceholder: string; accessCode: string; accessCodePlaceholder: string; accessCodeHint: string;
   printerUrl: string; apiKey: string; bambuCloud: string;
   cloudEmail: string; cloudEmailHint: string; cloudPassword: string;
   save: string; cancel: string; delete: string; edit: string;
@@ -108,6 +108,7 @@ const T: Record<BridgeLang, Tr> = {
     serial: 'Seriennummer',
     serialPlaceholder: '00M09A123456789',
     accessCode: 'Access Code',
+    accessCodePlaceholder: '8-stelliger Code',
     accessCodeHint: 'Alle drei Werte auf dem Druckerdisplay unter Einstellungen → Netzwerk.',
     printerUrl: 'Drucker-URL',
     apiKey: 'API-Key (optional)',
@@ -177,6 +178,7 @@ const T: Record<BridgeLang, Tr> = {
     serial: 'Serial Number',
     serialPlaceholder: '00M09A123456789',
     accessCode: 'Access Code',
+    accessCodePlaceholder: '8-character code',
     accessCodeHint: 'Find all three values on the printer display under Settings → Network.',
     printerUrl: 'Printer URL',
     apiKey: 'API Key (optional)',
@@ -277,7 +279,7 @@ const TA = {
     viaCloud: 'Sign in with Bambu Cloud',
     viaManual: 'Enter codes manually',
     manualTitle: 'Enter access codes',
-    manualHint: 'Every printer shows its 8-digit access code on the display under Settings → Network (or WLAN). Empty fields stay unchanged.',
+    manualHint: 'Every printer shows its 8-character access code on the display under Settings → Network (or WLAN). Empty fields stay unchanged.',
     saveCodes: 'Save codes & connect',
     cloudTitle: 'Access codes from Bambu Cloud',
     cloudHint: 'The bridge signs in to your Bambu Lab account once and takes over the access codes of printers whose serial number matches. Password and sign-in token are not stored — afterwards the printers are reached purely over the local network.',
@@ -533,6 +535,14 @@ function labelPage(printers: string[], saved = false): string {
 
 // ── Status page ────────────────────────────────────────────────────────────────
 
+/** Colour of a printer's status dot (status page and printer list). */
+function statusDot(state: PrinterBridgeState | undefined): string {
+  const status = state?.running ? state.snapshot?.status : undefined;
+  return status === 'printing' || status === 'idle' ? 'green'
+    : status === 'paused' ? 'yellow'
+    : status === 'error' ? 'red' : 'gray';
+}
+
 function statusPage(): string {
   const cfg = loadMultiConfig();
   const t = tr();
@@ -542,12 +552,7 @@ function statusPage(): string {
     const snap    = state?.snapshot ?? null;
     const running = state?.running ?? false;
 
-    const dotClass =
-      !running                     ? 'gray'   :
-      snap?.status === 'printing'  ? 'green'  :
-      snap?.status === 'paused'    ? 'yellow' :
-      snap?.status === 'error'     ? 'red'    :
-      snap?.status === 'idle'      ? 'green'  : 'gray';
+    const dotClass = statusDot(state);
 
     const statusLabel =
       needsAccessCode(printer)     ? ta().missing :
@@ -684,7 +689,7 @@ function setupListPage(): string {
     : cfg.printers.map(p => {
         const adapterLabel = p.adapterType === 'bambu' ? 'Bambu Lab' : p.adapterType === 'prusa' ? 'Prusa Link' : 'Moonraker';
         const state = printerStates.get(p.id);
-        const dotClass = !state?.running ? 'gray' : state.snapshot?.status === 'printing' ? 'green' : 'green';
+        const dotClass = statusDot(state);
         return `<div class="list-row">
           <span class="dot ${dotClass}"></span>
           <div style="flex:1;">
@@ -835,7 +840,7 @@ function printerFormPage(printer?: PrinterConfig, error?: string, prefill?: Form
       <label>${t.serial}</label>
       <input name="bambuSerial" placeholder="${t.serialPlaceholder}" value="${vBambuSerial}"/>
       <label>${t.accessCode}</label>
-      <input name="bambuCode" type="password" autocomplete="off" placeholder="${ph(printer?.adapterType === 'bambu' ? printer.adapterApiKey : '', '8-stelliger Code')}" value=""${prefilled ? ' autofocus' : ''}/>
+      <input name="bambuCode" type="password" autocomplete="off" placeholder="${ph(printer?.adapterType === 'bambu' ? printer.adapterApiKey : '', t.accessCodePlaceholder)}" value=""${prefilled ? ' autofocus' : ''}/>
       <p class="hint">${t.accessCodeHint}</p>
       <label>${t === T.de ? 'Kamera-Verbindung' : 'Camera connection'}</label>
       <select name="cameraTransport">
@@ -962,7 +967,7 @@ function manualCodesPage(error?: string): string {
   if (pending.length === 0) return simplePage(a.manualTitle, `<h1>${a.manualTitle}</h1><p class="hint">${a.noneMissing}</p>`);
   const rows = pending.map(p => `
     <label>${escAttr(p.name)} <span class="hint" style="display:inline;">· ${escAttr(p.adapterUrl)} · ${escAttr(p.adapterSerial)}</span></label>
-    <input name="code_${escAttr(p.id)}" type="password" autocomplete="off" placeholder="8-stellig / 8 digits"/>`).join('');
+    <input name="code_${escAttr(p.id)}" type="password" autocomplete="off" placeholder="${tr().accessCodePlaceholder}"/>`).join('');
   return simplePage(a.manualTitle, `
   <h1>${a.manualTitle}</h1>
   ${error ? `<div class="err-banner">${escAttr(error)}</div>` : ''}
