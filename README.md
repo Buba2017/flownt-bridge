@@ -256,6 +256,7 @@ unter dem die Bridge läuft:
 |---|---|
 | `config.json` | Drucker, Tokens, Access Codes, Kopplung, Einstellungen (Dateirechte 0600) |
 | `outbox.json` | Druckende-Meldungen, die noch an Flownt zugestellt werden müssen |
+| `outbox-rejected.json` | Druckende-Meldungen, die Flownt dauerhaft abgelehnt hat (Anzahl unter `/healthz`) |
 | `jobs/` | Zustand laufender Druckaufträge, damit ein Neustart mitten im Druck nichts verliert |
 | `bridge-key.pem` | Schlüssel der Bridge; Flownt verschlüsselt Access Codes für diese Bridge |
 
@@ -272,9 +273,15 @@ Dienst steuern (Linux, System-Dienst): `sudo systemctl stop|restart flownt-bridg
 
 ### Deinstallation
 
-`sudo bash uninstall.sh` entfernt den Linux-System-Dienst und `/opt/flownt-bridge`. Der
-Ordner `~/.flownt-bridge/` mit der Konfiguration bleibt erhalten. Für macOS, Windows und den
-Linux-User-Dienst gibt es kein Deinstallationsskript.
+Den Linux-System-Dienst entfernen:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Buba2017/flownt-bridge/main/uninstall.sh | sudo bash
+```
+
+Das Skript stoppt den Dienst und löscht `/opt/flownt-bridge` samt `flownt-bridge.env`. Der
+Ordner `.flownt-bridge` mit der Konfiguration im Home-Verzeichnis des Dienst-Benutzers bleibt
+erhalten. Für macOS, Windows und den Linux-User-Dienst gibt es kein Deinstallationsskript.
 
 ---
 
@@ -374,8 +381,8 @@ weiterleiten (wie in [CAMERA.md](CAMERA.md)), nie die ganze Bridge.
 ## Diagnose
 
 - `GET /healthz` liefert JSON ohne Geheimnisse: Version, Laufzeit, Kopplungs- und Abgleichstatus,
-  die Outbox und je Drucker Verbindung, Status, Alter der letzten Druckermeldung und des letzten
-  Pushs an Flownt. Beispiel auf einem Server: `curl -s http://127.0.0.1:7432/healthz | jq`.
+  die Outbox und je Drucker Verbindung, Status, Alter des letzten Druckerstands (letzte Abfrage
+  des Adapters) und des letzten Pushs an Flownt. Beispiel auf einem Server: `curl -s http://127.0.0.1:7432/healthz | jq`.
 - `GET /diagnostics.zip` (unter **Einstellungen** → „Diagnosepaket herunterladen“) ist ein Support-Paket: Versionen,
   Health-Daten, die Konfiguration mit geschwärzten Geheimnissen, die letzten Ereignisse und die
   letzten Log-Zeilen.

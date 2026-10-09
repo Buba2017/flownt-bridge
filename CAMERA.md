@@ -47,7 +47,9 @@ Liste erlaubter Origins.
 - Schließen des Viewers, Ausblenden des Browser-Tabs oder Verlassen der Seite gibt die
   Verbindung frei. Nach vorübergehenden Fehlern versucht Flownt dreimal, sich neu zu verbinden.
 - Langsame Betrachter verwerfen Bilder, statt eine unbegrenzte Warteschlange aufzubauen.
-- Ändern oder Löschen der Druckereinstellungen beendet die Kamera-Sitzungen dieses Druckers.
+- Ändern oder Löschen der Druckereinstellungen in der Bridge-Oberfläche beendet die
+  Kamera-Sitzungen dieses Druckers. Ändert ein Abgleich mit Flownt IP-Adresse oder Access Code,
+  verbindet der nächste Betrachter die Kamera mit den neuen Werten neu.
 - Es werden keine Bilder aufgezeichnet, nach Supabase hochgeladen oder auf der Festplatte
   gespeichert.
 

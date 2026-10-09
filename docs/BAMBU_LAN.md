@@ -27,8 +27,10 @@ zeigt sich als Befehlsantwort mit `result != "success"`, als fehlende Antwort od
 `command_rejected` (HTTP 409 auf `/printer/command`). Status, AMS-Daten, Dateien und Kamera
 funktionieren in allen Modi.
 
-Befehle müssen immer den Drucker benennen. `/printer/command` nimmt `printerId` (lokal) oder
-`flowntPrinterId`; ohne beides wirkt der Befehl nur, wenn genau ein Drucker verbunden ist.
+Ein Befehl gilt immer genau einem Drucker: `/printer/command` erkennt ihn am
+Flownt-Bridge-Token im `Authorization`-Header. `printerId` (lokal) und `flowntPrinterId` sind
+optional; werden sie mitgeschickt, müssen sie zum Token passen, sonst antwortet die Bridge mit
+403 `token_mismatch`.
 
 ## Druckzustand (`print.gcode_state`)
 

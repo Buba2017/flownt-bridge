@@ -6,7 +6,8 @@ SERVICE="flownt-bridge"
 INSTALL_DIR="/opt/flownt-bridge"
 
 if [ "$EUID" -ne 0 ]; then
-  echo "Bitte mit sudo ausführen: sudo bash uninstall.sh"
+  echo "Bitte mit sudo ausführen:"
+  echo "  curl -fsSL https://raw.githubusercontent.com/Buba2017/flownt-bridge/main/uninstall.sh | sudo bash"
   exit 1
 fi
 
@@ -20,4 +21,4 @@ systemctl daemon-reload
 rm -rf "$INSTALL_DIR"
 
 echo "Flownt Bridge entfernt."
-echo "Konfiguration (~/.flownt-bridge/) wurde beibehalten."
+echo "Die Konfiguration (.flownt-bridge im Home-Verzeichnis des Dienst-Benutzers) wurde beibehalten."
