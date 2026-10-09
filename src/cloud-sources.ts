@@ -43,7 +43,8 @@ export function cloudSourceFor(cfg: PrinterConfig): CloudTaskSource | null {
     return s;
   }
   if (cfg.bambuCloudEmail && cfg.bambuCloudPassword) {
-    const key = cfg.bambuCloudEmail.toLowerCase();
+    // Keyed by the password too: a corrected password must not keep the old client.
+    const key = `${cfg.bambuCloudEmail.toLowerCase()}\n${cfg.bambuCloudPassword}`;
     let c = legacy.get(key);
     if (!c) { c = new BambuCloudClient(cfg.bambuCloudEmail, cfg.bambuCloudPassword); legacy.set(key, c); }
     return c;

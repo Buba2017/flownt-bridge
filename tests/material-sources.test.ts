@@ -5,7 +5,8 @@ import type { AmsSlot } from '../src/adapters/types.js';
 import type { IngestBody, MaterialLine } from '../src/contract.js';
 import { amsRemainLines, cloudSlot, cloudTaskLines, matchCloudTask, parseCloudTasks, templateCloudTask } from '../src/material-sources.js';
 import { Outbox, type PendingMaterial } from '../src/outbox.js';
-import { Clock, FakeBackend, tempDir } from './helpers/bridge.js';
+import { cloudSourceFor } from '../src/cloud-sources.js';
+import { cfg, Clock, FakeBackend, tempDir } from './helpers/bridge.js';
 
 const slot = (unit: number, s: number, remain: number, uuid: string | null, extra: Partial<AmsSlot> = {}): AmsSlot =>
   ({ ams_unit: unit, slot: s, material: 'PLA', color: '#FF0000', remain, tray_weight: 1000, tray_uuid: uuid, ...extra });
@@ -264,4 +265,13 @@ test('cloud titles with a path prefix match the print name', () => {
     startTime: '2026-10-06T15:37:10Z', cover: 'https://x/c.png', amsDetailMapping: [{ ams: 3, weight: 553.61, filamentType: 'PLA' }] }] });
   const t = templateCloudTask(tasks, { serial: 'S1', title: '2 Pro Kit (No Glue Needed)', estimatedMin: 601, before: Date.parse('2026-10-08T00:00:00Z') });
   assert.equal(t?.id, '9');
+});
+
+test('cloud login from the config: one client per account, a corrected password is used at once', () => {
+  const withLogin = (email: string, password: string) => ({ ...cfg(), bambuCloudEmail: email, bambuCloudPassword: password });
+  const first = cloudSourceFor(withLogin('a@b.c', 'wrong'));
+  assert.ok(first);
+  assert.equal(cloudSourceFor(withLogin('A@b.c', 'wrong')), first);
+  assert.notEqual(cloudSourceFor(withLogin('a@b.c', 'right')), first);
+  assert.equal(cloudSourceFor(cfg()), null);
 });
