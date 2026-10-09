@@ -92,6 +92,7 @@ export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: Rem
   const removed: string[] = [];
   let dirty = pruneTombstones(cfg);
   const remote = res.printers.filter(r => r.enabled);
+  const acks: string[] = [];
 
   for (const r of remote) {
     // Bambu IPs come from DHCP: a fresh LAN announcement for the serial wins.
@@ -164,7 +165,7 @@ export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: Rem
       } catch (e) {
         log.error(`Secret ${s.id} nicht entschlüsselbar: ${(e as Error).message}`);
       }
-      ackQueue.push(s.id);
+      acks.push(s.id);
       continue;
     }
     try {
@@ -179,7 +180,7 @@ export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: Rem
     } catch (e) {
       log.error(`Secret ${s.id} nicht entschlüsselbar: ${(e as Error).message}`);
     }
-    ackQueue.push(s.id);
+    acks.push(s.id);
   }
 
   // Printers still without a code get a parked one back (re-added after a removal).
@@ -194,8 +195,12 @@ export function reconcile(res: BridgeSyncResponse, cb: LinkCallbacks, guard: Rem
     if (!added.includes(p) && !updated.includes(p)) updated.push(p);
   }
 
-  if (added.length || updated.length || removed.length || dirty) {
-    saveMultiConfig(cfg);
+  const changed = added.length || updated.length || removed.length || dirty;
+  if (changed) saveMultiConfig(cfg);
+  // Acknowledged only once stored: after a failed save (disk full) Flownt delivers the
+  // secrets again instead of deleting codes the bridge never kept.
+  ackQueue.push(...acks);
+  if (changed) {
     for (const id of removed) cb.onDelete(id);
     for (const p of added) cb.onAdd(p);
     for (const p of updated) cb.onUpdate(p);
