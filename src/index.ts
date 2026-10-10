@@ -1,5 +1,5 @@
 import open from 'open';
-import { loadMultiConfig, PrinterConfig, newPrinterId, FLOWNT_EDGE_URL, needsAccessCode } from './config.js';
+import { loadMultiConfig, PrinterConfig, FLOWNT_EDGE_URL, needsAccessCode } from './config.js';
 import { MoonrakerAdapter } from './adapters/moonraker.js';
 import { PrusaLinkAdapter } from './adapters/prusa.js';
 import { BambuAdapter } from './adapters/bambu.js';
