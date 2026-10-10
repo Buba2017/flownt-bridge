@@ -1,0 +1,565 @@
+{
+  "_fixture": {
+    "source": "flownt-bridge journal on bridge-vm",
+    "seen_at": "2026-10-06T16:40:08+00:00",
+    "printer": "3DP-1",
+    "model": "H2C",
+    "truncated_by_logger": true,
+    "note": "push_status cut at 20000 chars and closed again: ends after \"device\", so no gcode_state/mc_percent (a partial frame)"
+  },
+  "print": {
+    "2D": {
+      "bs": {
+        "bi": [
+          {
+            "clock_in": false,
+            "est_time": 0,
+            "idx": 0,
+            "print_then": false,
+            "proc_list": [],
+            "step_type": 1,
+            "tool_info": {
+              "color": "",
+              "diameter": 0.4000000059604645,
+              "id": 8978432
+            },
+            "type": 137
+          }
+        ],
+        "total_time": 0
+      },
+      "cond": 14,
+      "cur_stage": {
+        "clock_in_time": 0,
+        "idx": 0,
+        "left_time": 0,
+        "process": 0,
+        "state": 0
+      },
+      "first_confirm": false,
+      "makeable": false,
+      "material": {
+        "cur_id_list": [],
+        "state": 0,
+        "tar_id": "",
+        "tar_name": ""
+      },
+      "pm": 0
+    },
+    "3D": {
+      "layer_num": 6,
+      "print_cali_option": 0,
+      "total_layer_num": 283
+    },
+    "ams": {
+      "ams": [
+        {
+          "dry_setting": {
+            "dry_duration": -1,
+            "dry_filament": "",
+            "dry_temperature": -1
+          },
+          "dry_sf_reason": [],
+          "dry_time": 0,
+          "humidity": "3",
+          "humidity_raw": "27",
+          "id": "0",
+          "info": "10002003",
+          "temp": "31.7",
+          "tray": [
+            {
+              "bed_temp": "0",
+              "bed_temp_type": "0",
+              "cali_idx": -1,
+              "cols": [
+                "C1C1C1FF"
+              ],
+              "ctype": 2,
+              "drying_temp": "0",
+              "drying_time": "0",
+              "id": "0",
+              "nozzle_temp_max": "270",
+              "nozzle_temp_min": "240",
+              "remain": -1,
+              "state": 11,
+              "tag_uid": "0000000000000000",
+              "total_len": 330000,
+              "tray_color": "C1C1C1FF",
+              "tray_diameter": "1.75",
+              "tray_id_name": "",
+              "tray_info_idx": "GFG50",
+              "tray_sub_brands": "",
+              "tray_type": "PETG-CF",
+              "tray_uuid": "00000000000000000000000000000000",
+              "tray_weight": "0",
+              "xcam_info": "000000000000000000000000"
+            },
+            {
+              "bed_temp": "0",
+              "bed_temp_type": "0",
+              "cali_idx": -1,
+              "cols": [
+                "00000000"
+              ],
+              "ctype": 2,
+              "drying_temp": "70",
+              "drying_time": "8",
+              "id": "1",
+              "nozzle_temp_max": "220",
+              "nozzle_temp_min": "190",
+              "remain": 33,
+              "state": 11,
+              "tag_uid": "FB00000000000010",
+              "total_len": 330000,
+              "tray_color": "00000000",
+              "tray_diameter": "1.75",
+              "tray_id_name": "S05-C0",
+              "tray_info_idx": "GFS05",
+              "tray_sub_brands": "Support for PLA",
+              "tray_type": "PLA-S",
+              "tray_uuid": "FA4E0000000000000000000000000010",
+              "tray_weight": "250",
+              "xcam_info": "A438A4388403E8030000803F"
+            },
+            {
+              "bed_temp": "0",
+              "bed_temp_type": "0",
+              "cali_idx": -1,
+              "cols": [
+                "C6C6C6FF"
+              ],
+              "ctype": 2,
+              "drying_temp": "80",
+              "drying_time": "8",
+              "id": "2",
+              "nozzle_temp_max": "270",
+              "nozzle_temp_min": "240",
+              "remain": 100,
+              "state": 11,
+              "tag_uid": "FB00000000000011",
+              "total_len": 330000,
+              "tray_color": "C6C6C6FF",
+              "tray_diameter": "1.75",
+              "tray_id_name": "B50-D0",
+              "tray_info_idx": "GFB50",
+              "tray_sub_brands": "ABS-GF",
+              "tray_type": "ABS-GF",
+              "tray_uuid": "FA4E0000000000000000000000000011",
+              "tray_weight": "1000",
+              "xcam_info": "803E803E8403E803CDCC4C3F"
+            },
+            {
+              "bed_temp": "0",
+              "bed_temp_type": "0",
+              "cali_idx": -1,
+              "cols": [
+                "FFFFFFFF"
+              ],
+              "ctype": 2,
+              "drying_temp": "80",
+              "drying_time": "8",
+              "id": "3",
+              "nozzle_temp_max": "270",
+              "nozzle_temp_min": "240",
+              "remain": 46,
+              "state": 11,
+              "tag_uid": "FB00000000000012",
+              "total_len": 330000,
+              "tray_color": "FFFFFFFF",
+              "tray_diameter": "1.75",
+              "tray_id_name": "B50-W0",
+              "tray_info_idx": "GFB50",
+              "tray_sub_brands": "ABS-GF",
+              "tray_type": "ABS-GF",
+              "tray_uuid": "FA4E0000000000000000000000000012",
+              "tray_weight": "1000",
+              "xcam_info": "803E803E8403E8036666663F"
+            }
+          ]
+        },
+        {
+          "dry_setting": {
+            "dry_duration": -1,
+            "dry_filament": "",
+            "dry_temperature": -1
+          },
+          "dry_sf_reason": [],
+          "dry_time": 0,
+          "humidity": "2",
+          "humidity_raw": "28",
+          "id": "1",
+          "info": "11001101",
+          "temp": "31.0",
+          "tray": [
+            {
+              "id": "0",
+              "state": 26
+            },
+            {
+              "bed_temp": "0",
+              "bed_temp_type": "0",
+              "cali_idx": -1,
+              "cols": [
+                "161616FF"
+              ],
+              "ctype": 2,
+              "drying_temp": "0",
+              "drying_time": "0",
+              "id": "1",
+              "nozzle_temp_max": "240",
+              "nozzle_temp_min": "190",
+              "remain": -1,
+              "state": 11,
+              "tag_uid": "0000000000000000",
+              "total_len": 330000,
+              "tray_color": "161616FF",
+              "tray_diameter": "1.75",
+              "tray_id_name": "",
+              "tray_info_idx": "GFA01",
+              "tray_sub_brands": "",
+              "tray_type": "PLA",
+              "tray_uuid": "00000000000000000000000000000000",
+              "tray_weight": "0",
+              "xcam_info": "000000000000000000000000"
+            },
+            {
+              "bed_temp": "0",
+              "bed_temp_type": "0",
+              "cali_idx": -1,
+              "cols": [
+                "A8A8AAFF"
+              ],
+              "ctype": 2,
+              "drying_temp": "80",
+              "drying_time": "8",
+              "id": "2",
+              "nozzle_temp_max": "280",
+              "nozzle_temp_min": "260",
+              "remain": 97,
+              "state": 27,
+              "tag_uid": "FB00000000000013",
+              "total_len": 330000,
+              "tray_color": "A8A8AAFF",
+              "tray_diameter": "1.75",
+              "tray_id_name": "C01-D0",
+              "tray_info_idx": "GFC01",
+              "tray_sub_brands": "PC FR",
+              "tray_type": "PC",
+              "tray_uuid": "FA4E0000000000000000000000000013",
+              "tray_weight": "1000",
+              "xcam_info": "000000000000000000000000"
+            },
+            {
+              "bed_temp": "0",
+              "bed_temp_type": "0",
+              "cali_idx": -1,
+              "cols": [
+                "161616FF"
+              ],
+              "ctype": 2,
+              "drying_temp": "0",
+              "drying_time": "0",
+              "id": "3",
+              "nozzle_temp_max": "280",
+              "nozzle_temp_min": "240",
+              "remain": -1,
+              "state": 11,
+              "tag_uid": "0000000000000000",
+              "total_len": 330000,
+              "tray_color": "161616FF",
+              "tray_diameter": "1.75",
+              "tray_id_name": "",
+              "tray_info_idx": "GFB00",
+              "tray_sub_brands": "",
+              "tray_type": "ABS",
+              "tray_uuid": "00000000000000000000000000000000",
+              "tray_weight": "0",
+              "xcam_info": "000000000000000000000000"
+            }
+          ]
+        }
+      ],
+      "ams_exist_bits": "3",
+      "ams_exist_bits_raw": "3",
+      "cali_id": 255,
+      "cali_stat": 0,
+      "cfs": [
+        2,
+        3,
+        4,
+        5,
+        7
+      ],
+      "insert_flag": true,
+      "power_on_flag": false,
+      "tray_exist_bits": "ef",
+      "tray_hall_out_bits": "40",
+      "tray_is_bbl_bits": "ef",
+      "tray_now": "2",
+      "tray_pre": "2",
+      "tray_read_done_bits": "ef",
+      "tray_reading_bits": "0",
+      "tray_tar": "2",
+      "unbind_ams_stat": 0,
+      "version": 3156
+    },
+    "ams_rfid_status": 0,
+    "ams_status": 768,
+    "ap_err": 0,
+    "aux": "2001004",
+    "aux_part_fan": false,
+    "batch_id": 0,
+    "bed_target_temper": 110.0,
+    "bed_temper": 110.0,
+    "big_fan1_speed": "0",
+    "big_fan2_speed": "0",
+    "cali_version": 0,
+    "canvas_id": 0,
+    "care": [
+      {
+        "id": "ls",
+        "info": "971907"
+      },
+      {
+        "id": "ld",
+        "info": "641864"
+      },
+      {
+        "id": "lr",
+        "info": "971907"
+      },
+      {
+        "id": "hr",
+        "info": "631863"
+      }
+    ],
+    "cfg": "801857DAB9",
+    "command": "push_status",
+    "cooling_fan_speed": "2",
+    "design_id": "0",
+    "device": {
+      "airduct": {
+        "modeCur": 1,
+        "modeFunc": 1,
+        "modeList": [
+          {
+            "ctrl": [
+              16,
+              32,
+              48
+            ],
+            "modeId": 0,
+            "off": [
+              96
+            ]
+          },
+          {
+            "ctrl": [
+              16
+            ],
+            "modeId": 1,
+            "off": [
+              32,
+              48
+            ]
+          },
+          {
+            "ctrl": [
+              48
+            ],
+            "modeId": 2,
+            "off": []
+          }
+        ],
+        "modeVisable": 7,
+        "parts": [
+          {
+            "func": 0,
+            "id": 16,
+            "range": 6553600,
+            "state": 10,
+            "tar_state": 10
+          },
+          {
+            "func": 1,
+            "id": 32,
+            "range": 6553600,
+            "state": 0,
+            "tar_state": 0
+          },
+          {
+            "func": 2,
+            "id": 48,
+            "range": 6553600,
+            "state": 0,
+            "tar_state": 0
+          },
+          {
+            "func": 4,
+            "id": 96,
+            "range": 6553600,
+            "state": 100,
+            "tar_state": 100
+          }
+        ],
+        "subFunc": 0,
+        "subMode": -1,
+        "subVisable": 0,
+        "version": 1
+      },
+      "bed": {
+        "info": {
+          "temp": 7209070
+        },
+        "state": 2
+      },
+      "bed_temp": 7209070,
+      "cam": {
+        "laser": {
+          "cond": 252,
+          "state": 0
+        },
+        "timelapse_path": ""
+      },
+      "ctc": {
+        "info": {
+          "temp": 3932219
+        },
+        "state": 2
+      },
+      "ext_tool": {
+        "calib": 2,
+        "low_prec": true,
+        "mount": 0,
+        "mount_3d": 1,
+        "th_temp": 0,
+        "type": "F000"
+      },
+      "extruder": {
+        "info": [
+          {
+            "filam_bak": [],
+            "hnow": 0,
+            "hpre": 0,
+            "htar": 0,
+            "id": 0,
+            "info": 1545,
+            "snow": 65535,
+            "spre": 65535,
+            "star": 65535,
+            "stat": 0,
+            "temp": 77
+          },
+          {
+            "filam_bak": [],
+            "hnow": 1,
+            "hpre": 1,
+            "htar": 1,
+            "id": 1,
+            "info": 1118,
+            "snow": 258,
+            "spre": 258,
+            "star": 258,
+            "stat": 197376,
+            "temp": 18350360
+          }
+        ],
+        "state": 33042
+      },
+      "fan": 411904,
+      "fila_switch": null,
+      "fire_ext": {
+        "bot_err": 0,
+        "cd": 0,
+        "cd_init": 15,
+        "connect_flag": 0,
+        "drill_flag": 0,
+        "history": [],
+        "remain_time": 0,
+        "rm_init": 33,
+        "state": 0
+      },
+      "fourth_axis": {
+        "connect_flag": 0,
+        "theta_pitch": -1
+      },
+      "holder": {
+        "info": 1,
+        "job": 0,
+        "pos": 3,
+        "stat": 0,
+        "step": [
+          0
+        ]
+      },
+      "laser": {
+        "power": 0
+      },
+      "nozzle": {
+        "exist": 3997699,
+        "info": [
+          {
+            "color_m": "C6C6C6FF",
+            "diameter": 0.4,
+            "fila_id": "GFB50",
+            "id": 0,
+            "p_t": 55333,
+            "sn": "TESTSN000000005",
+            "stat": 0,
+            "tm": 350,
+            "type": "HS01",
+            "wear": 128.0
+          },
+          {
+            "color_m": "00000000",
+            "diameter": 0.4,
+            "fila_id": "",
+            "id": 1,
+            "p_t": 0,
+            "sn": "N/A",
+            "stat": 0,
+            "tm": 0,
+            "type": "HS01",
+            "wear": 0.0
+          },
+          {
+            "color_m": "00000000",
+            "diameter": 0.4,
+            "fila_id": "",
+            "id": 16,
+            "p_t": 0,
+            "sn": "TESTSN000000006",
+            "stat": 0,
+            "tm": 350,
+            "type": "HS01",
+            "wear": 128.0
+          },
+          {
+            "color_m": "00000000",
+            "diameter": 0.4,
+            "fila_id": "",
+            "id": 18,
+            "p_t": 0,
+            "sn": "TESTSN000000007",
+            "stat": 0,
+            "tm": 350,
+            "type": "HS01",
+            "wear": 128.0
+          },
+          {
+            "color_m": "00000000",
+            "diameter": 0.4,
+            "fila_id": "",
+            "id": 20,
+            "p_t": 0,
+            "sn": "TESTSN000000008",
+            "stat": 0,
+            "tm": 350,
+            "type": "HS01",
+            "wear": 128.0
+          }
+        ]
+      }
+    }
+  }
+}

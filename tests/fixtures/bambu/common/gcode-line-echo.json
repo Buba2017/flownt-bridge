@@ -1,0 +1,17 @@
+{
+  "_fixture": {
+    "source": "flownt-bridge journal on bridge-vm",
+    "seen_at": "2026-10-06T16:50:54+00:00",
+    "printer": "unknown (X1C/X2D/H2C fleet)",
+    "note": "command reply/echo on the report topic (not push_status)"
+  },
+  "print": {
+    "command": "gcode_line",
+    "err_code": 0,
+    "param": "M960 S6 P1\n",
+    "reason": "SUCCESS",
+    "result": "SUCCESS",
+    "sequence_id": "2023",
+    "source": 3072
+  }
+}

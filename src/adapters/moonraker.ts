@@ -21,8 +21,9 @@ interface MoonrakerQueryResponse {
 function mapState(state: string): PrinterSnapshot['status'] {
   switch (state) {
     case 'printing':
-    case 'paused':
       return 'printing';
+    case 'paused':
+      return 'paused'; // the job lives on; the bridge sends paused to Flownt as printing
     case 'error':
       return 'error';
     case 'standby':
@@ -34,7 +35,7 @@ function mapState(state: string): PrinterSnapshot['status'] {
 }
 
 // Normalisierter Job-Ausgang aus print_stats.state. Entscheidend: complete ≠ cancelled
-// (heute kollabieren beide zu idle → der Abbruch würde sonst als Erfolg abgebucht).
+// (beide werden im Status zu idle → der Abbruch würde sonst als Erfolg abgebucht).
 function mapJobResult(state: string): JobResult | null {
   switch (state) {
     case 'complete':  return 'completed';
@@ -44,11 +45,15 @@ function mapJobResult(state: string): JobResult | null {
   }
 }
 
+const isActive = (s: PrinterSnapshot['status'] | null) => s === 'printing' || s === 'paused';
+
 export class MoonrakerAdapter implements Adapter {
   private baseUrl: string;
   private apiKey: string;
   private prevStatus: PrinterSnapshot['status'] | null = null;
   private parsedFilamentWeights: FilamentWeight[] | null = null;
+  // Bumped per new print: a download still running for an earlier print is discarded.
+  private jobSeq = 0;
 
   constructor(baseUrl: string, apiKey = '') {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -61,7 +66,7 @@ export class MoonrakerAdapter implements Adapter {
     return h;
   }
 
-  private async fetchPrintFile(filename: string): Promise<void> {
+  private async fetchPrintFile(filename: string, seq: number): Promise<void> {
     try {
       const url = `${this.baseUrl}/server/files/gcodes/${encodeURIComponent(filename)}`;
       const res = await fetch(url, { headers: this.headers(), signal: AbortSignal.timeout(30_000) });
@@ -71,6 +76,7 @@ export class MoonrakerAdapter implements Adapter {
       }
       const buf = Buffer.from(await res.arrayBuffer());
       const weights = parseFileBuffer(filename, buf);
+      if (seq !== this.jobSeq) return;
       this.parsedFilamentWeights = weights;
       console.log(`[moonraker] Druckdatei geladen: ${filename} → ${weights.length} Filament(e) geparst`);
     } catch (err) {
@@ -89,12 +95,13 @@ export class MoonrakerAdapter implements Adapter {
       const ps = s.print_stats;
       const printerStatus = mapState(ps?.state ?? 'standby');
 
-      // Druckdatei bei idle→printing herunterladen
-      const isNewPrint = this.prevStatus !== 'printing' && this.prevStatus !== 'paused' && printerStatus === 'printing';
+      // New print (also one first seen paused, e.g. after a bridge restart): fetch its file.
+      const isNewPrint = !isActive(this.prevStatus) && isActive(printerStatus);
       if (isNewPrint) {
+        this.jobSeq++;
         this.parsedFilamentWeights = null;
         if (ps?.filename) {
-          this.fetchPrintFile(ps.filename).catch(err => console.error('[moonraker] fetchPrintFile:', err));
+          this.fetchPrintFile(ps.filename, this.jobSeq).catch(err => console.error('[moonraker] fetchPrintFile:', err));
         }
       }
       this.prevStatus = printerStatus;
