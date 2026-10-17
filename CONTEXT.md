@@ -19,29 +19,47 @@ Adapter **emittieren keine Events**, sie liefern **Zustands-Snapshots**:
 ## Single Source of Truth
 
 - **Zustand:** `PrinterSnapshot` (`src/adapters/types.ts`) — Status, Temps, Fortschritt, AMS, `jobResult`,
-  `parsedFilamentWeights`, Energie/Leistung. Beide Adapter implementieren das.
+  `parsedFilamentWeights`, Energie/Leistung. Alle Adapter implementieren das.
 - **Wire-/Event-Vertrag:** `src/contract.ts` — `EventType`, `IngestBody`, `SlotRef`, `MaterialLine`.
   `bridge.ts` baut ausschließlich diese Typen (kein `Record<string,unknown>` mehr).
 
 ## Kanonische Events (`EventType`)
 
-`heartbeat` · `status_update` · `job_complete` · `job_failed`
+`heartbeat` · `status_update` · `job_complete` · `job_failed` · `job_file`
 
-Job-Ende = Übergang **(printing|paused) → (idle|error)**. Der Ausgang kommt aus dem vom Adapter
-normalisierten `PrinterSnapshot.jobResult` (`completed|aborted|failed`; Fallback: `error→failed`,
-`idle→completed`):
-- `completed` → `job_complete` (Materialabzug).
-- `aborted|failed` → `job_failed` (**kein** Materialabzug; Dauer + gemessene Energie werden geloggt,
-  Backend legt einen `aborted`-Drucklog an).
+`job_file` (Contract ≥ 3) legt die Druckdatei eines Bambu-Auftrags am Drucklog ab: ankündigen,
+bei Bedarf hochladen, bestätigen (`JobFileRef` in `contract.ts`).
+
+**Job-Ende über Job-Sessions** (`JobTracker`, `src/job-session.ts`): Je Drucker gibt es eine
+gespeicherte Session, die Neustarts der Bridge übersteht. Sie beginnt, wenn ein Job aktiv wird
+(printing|paused), und endet, wenn derselbe Job nicht mehr aktiv ist oder ein anderer Job auf dem
+Drucker läuft. Veraltete (`stale`) und Offline-Snapshots starten und beenden nie einen Job. Der
+Ausgang kommt aus dem vom Adapter normalisierten `PrinterSnapshot.jobResult`
+(`completed|aborted|failed`) bzw. `jobState`; ohne eindeutiges Ende gilt Fortschritt ≥ 99 % →
+`completed`, sonst `failed`. Ein von der Bridge gesendeter Stopp macht aus `failed` ein `cancelled`.
+- `completed` → `job_complete` (voller Materialabzug).
+- `failed|cancelled` → `job_failed` mit `outcome`, `failure_reason` und `last_progress_pct`.
+  Gebucht wird nur der gedruckte Anteil: Slicer-Gramm × Anteil aus Schichten bzw. Fortschritt
+  (`measureSource: 'estimated_partial'`). Ohne gedruckten Anteil gibt es keine Materialzeilen.
+- Fehlen beim Ende die Slicer-Gewichte, hält die Outbox das Event bis zu 30 Minuten zurück und
+  sucht das Material (Druckdatei erneut, Bambu-Cloud-Verlauf, früherer gleicher Auftrag). Danach
+  bleibt die Schätzung aus der RFID-Restmenge, sonst `material_unknown`.
+
+Terminal-Events gehen über die persistente Outbox (`src/outbox.ts`, `outbox.json`): Wiederholung
+mit Backoff, bis Flownt sie annimmt, auch über Neustarts. `source_job_id` ist immer gesetzt; das
+Backend bucht je (Drucker, `source_job_id`) höchstens einmal, Wiederholungen sind also
+unschädlich. Dauerhaft abgelehnte Events (4xx außer 408/429) landen in `outbox-rejected.json`.
 
 `job_started`/`state_changed`/`spool_assigned` sind **bewusst nicht** als eigene Events ausgeführt —
 sie stecken in `status_update` + `printer_status`; das Spulen-Matching passiert backend-seitig.
 
 ## Material & Slot-Identität (`MaterialLine` / `SlotRef`)
 
-- **Gewichtsquelle vereinheitlicht:** beide Adapter parsen die Druckdatei mit demselben
-  `parseFileBuffer` (3MF slice_info / Slic3r_PE / GCode); `measureSource` (`slicer_file|bambu_cloud`)
-  führt die Quelle als Metadatum mit.
+- **Gewichtsquelle vereinheitlicht:** alle Adapter parsen die Druckdatei mit demselben
+  `parseFileBuffer` (3MF slice_info / Slic3r_PE / GCode). `measureSource` führt die Quelle als
+  Metadatum mit: `slicer_file` (Druckdatei), `bambu_cloud` (Cloud-Auftragsverlauf),
+  `estimated_partial` (Anteil bei `job_failed`), `template` (früherer gleicher Auftrag),
+  `ams_remain` (Rückgang der RFID-Restmenge).
 - **Vendor-abstrahierte Slot-Referenz:** `SlotRef { source: 'ams'|'slicer_order'|'nfc', value }`.
   Bambu-AMS-Pfade setzen `source:'ams'` (value = globaler AMS-Index unit*4+slot); Moonraker
   `source:'slicer_order'` (value = Slicer-Reihenfolge). NFC ist künftig nur ein weiterer `source`.
@@ -53,8 +71,8 @@ sie stecken in `status_update` + `printer_status`; das Spulen-Matching passiert 
 | Aspekt | Bambu (`bambu.ts`) | Moonraker (`moonraker.ts`) | Prusa Link (`prusa.ts`) |
 |---|---|---|---|
 | Transport | MQTT 8883 + FTPS 990 | HTTP (`/printer/objects/query`, `/server/files/gcodes`) | HTTP (`/api/v1/status`, `/api/v1/job`, X-Api-Key) |
-| Status | `gcode_state` → `mapState` | `print_stats.state` → `mapState` | `printer.state` → `mapState` (ATTENTION+Job = paused) |
-| `jobResult` | `FINISH→completed`, `FAILED→failed` (Stop meldet FAILED) | `complete→completed`, `cancelled→aborted`, `error→failed` | `FINISHED→completed`, `STOPPED→aborted`, `ERROR→failed` |
+| Status | `gcode_state` → `mapState` (PREPARE/SLICING = printing) | `print_stats.state` → `mapState` (`paused` = paused) | `printer.state` → `mapState` (ATTENTION+Job = paused) |
+| `jobResult` | `FINISH→completed`, `FAILED→failed`; FAILED mit `print_error` `0x8001` (Stopp durch Nutzer) oder nach einem Stopp der Bridge → `aborted` | `complete→completed`, `cancelled→aborted`, `error→failed` | `FINISHED→completed`, `STOPPED→aborted`, `ERROR→failed` |
 | Slot-Identität | AMS (ams_mapping/aktiver Slot/Farbe) → `source:'ams'` | Slicer-Reihenfolge → `source:'slicer_order'`; Lagerort via „Material-Slots" in der App | wie Moonraker (Material-Slots) |
 | Befehle | Pause/Resume/Stop | — | — |
 
@@ -74,16 +92,18 @@ Umgesetzt in 3 Stufen: **A** Vertrag typisiert · **B** `SlotRef`/`MaterialLine`
 
 ## Versionierung & Versions-Awareness
 
-**Single Source der Bridge-Version:** `src/version.ts` (`BRIDGE_VERSION`). Bei jedem Release zusammen
-mit `package.json` `"version"` anheben — und in der App `RECOMMENDED_BRIDGE_VERSION` in
+**Single Source der Bridge-Version:** `package.json` `"version"`. `src/version.ts` (`BRIDGE_VERSION`)
+liest sie beim Start aus dem Quellcode aus `package.json`; `npm run build` übernimmt sie ins Bundle.
+Bei jedem Release nur `package.json` anheben — und in der App `RECOMMENDED_BRIDGE_VERSION` in
 `src/lib/version.ts`.
 
 **Wie die Version sichtbar wird (erledigt, live ab v0.4.1):**
 - *Auf der Bridge selbst:* Footer „Flownt Bridge vX.Y.Z" auf jeder Web-UI-Seite + `GET /api/version`
-  (liefert `{version}`) + Startup-Log `[flownt-bridge] vX.Y.Z startet…`.
-- *Meldung an Flownt:* nur **Monitoring**-Instanzen senden `bridge_version` im Ingest-Body (Heartbeat/Push,
-  ab v0.4.0). `bridge-ingest` schreibt es nach `printer_bridge_configs.bridge_version`. Reine
-  Etikettendruck-Instanzen melden nichts (haben keine Drucker → kein Push).
+  (liefert `{version, command_auth}`) + Startup-Log `[flownt-bridge] vX.Y.Z startet…`.
+- *Meldung an Flownt:* **Monitoring**-Instanzen senden `bridge_version` im Ingest-Body (Heartbeat/Push,
+  ab v0.4.0). `bridge-ingest` schreibt es nach `printer_bridge_configs.bridge_version`. Gekoppelte
+  Bridges melden die Version zusätzlich bei der Kopplung und bei jedem Abgleich (`bridge-sync`),
+  auch ohne Drucker. Nur ungekoppelte reine Etikettendruck-Instanzen melden nichts.
 - *In der App:* Drucker-Modal („Bridge-Verbindung" → „Bridge-Version: vX") + amber „Update"-Badge auf der
   Druckerkarte, wenn gemeldete Version < `RECOMMENDED_BRIDGE_VERSION` (`bridgeUpdateAvailable()`).
 

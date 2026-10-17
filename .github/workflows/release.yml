@@ -1,0 +1,55 @@
+name: Release
+
+# Push a tag "vX.Y.Z" (matching package.json "version") to build the standalone
+# binaries, write SHA256SUMS and attach both to the GitHub release of that tag.
+# install.sh / install.ps1 verify the downloaded binary against SHA256SUMS.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Apple Silicon runner, like manual releases: pkg can ad-hoc sign the macOS binaries.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Tag matches package.json version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json ($expected)"; exit 1
+          fi
+      - name: Rosetta 2 (pkg runs an x64 Node to compile bytecode for the x64 targets)
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+      - run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Tests
+        run: npm test
+      - name: Build binaries
+        run: npm run package
+      - name: Checksums
+        working-directory: dist
+        run: |
+          assets="flownt-bridge-macos-arm64 flownt-bridge-macos-x64 flownt-bridge-win-x64.exe flownt-bridge-linux-arm64 flownt-bridge-linux-x64"
+          for f in $assets; do test -s "$f" || { echo "::error::missing $f"; exit 1; }; done
+          shasum -a 256 $assets > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          cd dist
+          gh release upload "$GITHUB_REF_NAME" \
+            flownt-bridge-macos-arm64 flownt-bridge-macos-x64 flownt-bridge-win-x64.exe \
+            flownt-bridge-linux-arm64 flownt-bridge-linux-x64 SHA256SUMS --clobber

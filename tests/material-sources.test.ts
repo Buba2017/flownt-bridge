@@ -1,0 +1,277 @@
+import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import type { AmsSlot } from '../src/adapters/types.js';
+import type { IngestBody, MaterialLine } from '../src/contract.js';
+import { amsRemainLines, cloudSlot, cloudTaskLines, matchCloudTask, parseCloudTasks, templateCloudTask } from '../src/material-sources.js';
+import { Outbox, type PendingMaterial } from '../src/outbox.js';
+import { cloudSourceFor } from '../src/cloud-sources.js';
+import { cfg, Clock, FakeBackend, tempDir } from './helpers/bridge.js';
+
+const slot = (unit: number, s: number, remain: number, uuid: string | null, extra: Partial<AmsSlot> = {}): AmsSlot =>
+  ({ ams_unit: unit, slot: s, material: 'PLA', color: '#FF0000', remain, tray_weight: 1000, tray_uuid: uuid, ...extra });
+
+const T0 = Date.parse('2026-10-07T06:49:20Z');
+const tasksResponse = {
+  total: 3,
+  hits: [
+    { id: 111, deviceId: '20P6BJ650604116', title: 'Oberschale', startTime: '2026-10-07T06:49:00Z', endTime: '2026-10-07T09:39:00Z',
+      weight: 151.2, amsDetailMapping: [{ ams: 1, weight: 150.2, filamentType: 'ABS-GF', targetColor: 'FF6600FF' }, { ams: 255, weight: 1 }] },
+    { id: 222, deviceId: '20P6BJ650604116', title: 'Anderes Teil', startTime: '2026-10-07T06:52:00Z', weight: 10, amsDetailMapping: [] },
+    { id: 333, deviceId: 'OTHER', title: 'Oberschale', startTime: '2026-10-07T06:49:20Z', weight: 99, amsDetailMapping: [{ ams: 0, weight: 99 }] },
+    { deviceId: 'broken' },
+  ],
+};
+
+test('cloud tasks: parsing, tray ids and matching by id, title and time', () => {
+  const tasks = parseCloudTasks(tasksResponse);
+  assert.equal(tasks.length, 3);
+  assert.deepEqual(tasks[0].ams, [
+    { ams: 1, weight: 150.2, filamentType: 'ABS-GF', color: '#FF6600' },
+    { ams: 255, weight: 1, filamentType: undefined, color: undefined },
+  ]);
+  assert.equal(cloudSlot(5), 5);
+  assert.equal(cloudSlot(128), 128);
+  assert.equal(cloudSlot(255), 254);
+  assert.equal(cloudSlot(-1), 254);
+  assert.equal(cloudSlot(300), null);
+
+  const base = { serial: '20P6BJ650604116', ids: [], startedAt: T0, finishedAt: T0 + 170 * 60_000 };
+  assert.equal(matchCloudTask(tasks, { ...base, ids: ['222'] })?.id, '222', 'id wins');
+  assert.equal(matchCloudTask(tasks, { ...base, title: 'Oberschale' })?.id, '111', 'same title within the window');
+  assert.equal(matchCloudTask(tasks, { ...base, title: 'Anderes_Teil' })?.id, '222', 'title normalised');
+  assert.equal(matchCloudTask(tasks, { ...base, startedAt: T0 + 3 * 3_600_000, finishedAt: T0 + 4 * 3_600_000 }), null, 'far away');
+  assert.equal(matchCloudTask(tasks, { ...base, serial: 'NOPE', title: 'Oberschale' }), null, 'other printer');
+});
+
+test('cloud task lines: per tray, RFID of the slot, scaled for failed jobs', () => {
+  const [task] = parseCloudTasks(tasksResponse);
+  const slots = [slot(0, 1, 50, 'UUID-A2')];
+  assert.deepEqual(cloudTaskLines(task, slots), [
+    { filamentIndex: 1, grams: 150.2, color: '#FF6600', filament_type: 'ABS-GF', slotRef: { source: 'ams', value: 1 },
+      measureSource: 'bambu_cloud', estimated_grams: 150.2, tray_uuid: 'UUID-A2' },
+    { filamentIndex: 254, grams: 1, color: undefined, filament_type: null, slotRef: { source: 'ams', value: 254 },
+      measureSource: 'bambu_cloud', estimated_grams: 1, tray_uuid: null },
+  ]);
+  const partial = cloudTaskLines(task, slots, 0.5);
+  assert.equal(partial[0].grams, 75.1);
+  assert.equal(partial[0].measureSource, 'estimated_partial');
+});
+
+test('RFID remaining-% estimate', () => {
+  const start = [slot(0, 0, 80, 'U1'), slot(0, 1, 50, 'U2'), slot(0, 2, -1, null), slot(0, 3, 40, 'U4')];
+  const end = [slot(0, 0, 70, 'U1'), slot(0, 1, 50, 'U2'), slot(0, 2, -1, null), slot(0, 3, 90, 'U5')];
+  assert.deepEqual(amsRemainLines(start, end), [
+    { filamentIndex: 0, grams: 100, color: '#FF0000', filament_type: 'PLA', slotRef: { source: 'ams', value: 0 },
+      measureSource: 'ams_remain', tray_uuid: 'U1' },
+  ], 'only the slot whose spool stayed and dropped counts');
+  assert.equal(amsRemainLines(start, end, 20)[0].grams, 125, 'adopted at 20 %: extrapolated');
+  assert.deepEqual(amsRemainLines(start, end, 60), [], 'adopted late: no estimate');
+  assert.deepEqual(amsRemainLines(undefined, end), []);
+});
+
+const pending = (over: Partial<PendingMaterial> = {}): PendingMaterial => ({
+  until: Date.parse('2026-10-06T12:30:00Z'), nextAt: 0, attempts: 0, plateIndex: 1, fileUnreadable: true,
+  serial: 'S', jobIds: [], startedAt: 0, finishedAt: 0, fraction: null, mapping: [], activeSlot: null, amsSlots: [],
+  fallback: [], ...over,
+});
+const body = (id: string): IngestBody => ({ auth_token: 'old', event_type: 'job_complete', source_job_id: id, contract_version: 3 });
+const line: MaterialLine = { filamentIndex: 1, grams: 42, slotRef: { source: 'ams', value: 1 }, measureSource: 'bambu_cloud' };
+
+test('outbox: a job end waits for its material lookup and goes out with the result', async () => {
+  const dir = tempDir(), clock = new Clock(), be = new FakeBackend();
+  const ob = new Outbox(join(dir, 'outbox.json'), be.send, clock.now);
+  let calls = 0;
+  ob.setEnricher('p1', async () => (++calls < 2 ? null : { lines: [line], source: 'Bambu Cloud' }));
+  ob.enqueue('p1', 'P1', body('a'), pending());
+  await ob.flush();
+  assert.equal(be.calls.length, 0, 'nothing found yet: not sent');
+  assert.equal(ob.stats().awaitingMaterial, 1);
+  await ob.flush();
+  assert.equal(calls, 1, 'retry waits for its backoff');
+  clock.t += 60_000;
+  await ob.flush();
+  assert.deepEqual(be.delivered()[0].filament_weights, [line]);
+  assert.equal(be.delivered()[0].material_unknown, undefined);
+  assert.equal(ob.stats().pending, 0);
+});
+
+test('outbox: after the lookup window the fallback (or material_unknown) is sent', async () => {
+  const dir = tempDir(), clock = new Clock(), be = new FakeBackend();
+  const ob = new Outbox(join(dir, 'outbox.json'), be.send, clock.now);
+  ob.setEnricher('p1', async () => null);
+  const estimate: MaterialLine = { ...line, measureSource: 'ams_remain', grams: 100 };
+  ob.enqueue('p1', 'P1', body('a'), pending({ fallback: [estimate] }));
+  ob.enqueue('p1', 'P1', body('b'), pending());
+  await ob.flush();
+  assert.equal(be.calls.length, 0);
+  clock.t = Date.parse('2026-10-06T12:30:01Z');
+  await ob.flush();
+  const sent = be.delivered();
+  assert.deepEqual(sent.find(b => b.source_job_id === 'a')?.filament_weights, [estimate]);
+  assert.equal(sent.find(b => b.source_job_id === 'b')?.material_unknown, true);
+});
+
+test('outbox: an exhausted lookup sends the fallback at once', async () => {
+  const dir = tempDir(), clock = new Clock(), be = new FakeBackend();
+  const ob = new Outbox(join(dir, 'outbox.json'), be.send, clock.now);
+  ob.setEnricher('p1', async () => 'exhausted');
+  ob.enqueue('p1', 'P1', body('a'), pending());
+  await ob.flush();
+  assert.equal(be.delivered()[0].material_unknown, true);
+});
+
+test('outbox: pending material survives a restart', async () => {
+  const dir = tempDir(), clock = new Clock(), be = new FakeBackend();
+  new Outbox(join(dir, 'outbox.json'), be.send, clock.now).enqueue('p1', 'P1', body('a'), pending());
+  const ob = new Outbox(join(dir, 'outbox.json'), be.send, clock.now);
+  assert.equal(ob.stats().awaitingMaterial, 1);
+  ob.setEnricher('p1', async () => ({ lines: [line], source: 'Druckdatei' }));
+  await ob.flush();
+  assert.equal(be.delivered().length, 1);
+});
+
+test('outbox: rejected events are kept, a rotated token is used', async () => {
+  const dir = tempDir(), clock = new Clock(), be = new FakeBackend();
+  const ob = new Outbox(join(dir, 'outbox.json'), be.send, clock.now);
+  ob.setTokenResolver(id => (id === 'p1' ? 'new' : null));
+  be.respond = b => (b.auth_token === 'new' ? 200 : 401);
+  ob.enqueue('p1', 'P1', body('a'));
+  ob.enqueue('p2', 'P2', body('b'));
+  await ob.flush();
+  assert.equal(be.delivered()[0].source_job_id, 'a', 'sent with the current token');
+  assert.equal(ob.stats().rejected, 1);
+  assert.equal(new Outbox(join(dir, 'outbox.json'), be.send, clock.now).rejected()[0].body.source_job_id, 'b', 'kept on disk');
+});
+
+test('terminal body defers a job without slicer weights; the enricher finds file or cloud', async () => {
+  const { buildTerminalBody, materialEnricher } = await import('../src/bridge.js');
+  const { cfg } = await import('./helpers/bridge.js');
+  const session = {
+    version: 1 as const, jobKey: 'task:5538', sourceJobId: 'task:5538@1', printFile: 'Oberschale', startedAt: T0,
+    startedAtSource: 'printer' as const, energyStartWh: null, filamentMapping: [], parsedFilamentWeights: [],
+    estimatedDurationMin: null, lastProgressPct: 100, lastLayer: null, totalLayers: null, lastActiveSlot: 1,
+    amsSlots: [slot(0, 1, 35, 'UUID-A2')], amsSlotsAtStart: [slot(0, 1, 50, 'UUID-A2')], amsStartProgressPct: 0,
+    jobIds: { taskId: '5538' }, plateIndex: 1, fileInternal: true, printError: null, hms: [], stopRequested: false, updatedAt: T0,
+  };
+  const end = { session, outcome: 'completed' as const, finishedAt: T0 + 3_600_000, seen: true };
+  const snap = { status: 'idle' as const };
+
+  // Adapter without print files and no cloud: sent right away with the RFID estimate.
+  const direct = buildTerminalBody(cfg(), snap, end, null, { canRefetch: false, hasCloud: false });
+  assert.equal(direct.pending, undefined);
+  assert.equal(direct.body.filament_weights?.[0].grams, 150);
+  assert.equal(direct.body.filament_weights?.[0].measureSource, 'ams_remain');
+
+  // With a cloud source: deferred, the estimate kept as fallback.
+  const deferred = buildTerminalBody(cfg(), snap, end, null, { canRefetch: true, hasCloud: true });
+  assert.ok(deferred.pending);
+  assert.equal(deferred.pending.fileUnreadable, false, 'the card is still tried once (X1C reprints report /data/)');
+  assert.deepEqual(deferred.pending.jobIds, ['5538']);
+  assert.equal(deferred.pending.fallback[0].grams, 150);
+
+  // No file, no cloud: the lookup is exhausted.
+  assert.equal(await materialEnricher({ getSnapshot: async () => snap }, cfg, () => null)({ ...deferred.pending, fileUnreadable: true }), 'exhausted');
+
+  const cloud = { listTasks: async () => parseCloudTasks(tasksResponse) };
+  const enrich = materialEnricher({ getSnapshot: async () => snap }, () => ({ ...cfg(), adapterSerial: '20P6BJ650604116' }), () => cloud);
+  const found = await enrich({ ...deferred.pending, serial: '20P6BJ650604116' });
+  assert.equal(found?.source, 'Bambu Cloud');
+  assert.equal(found?.lines[0].grams, 150.2);
+  assert.equal(found?.lines[0].tray_uuid, 'UUID-A2');
+
+  // File on the SD card after all: the file wins and needs no cloud.
+  const xml = '<config><plate><metadata key="index" value="1"/><filament id="1" type="PETG" used_g="33.5" color="#00FF00"/></plate></config>';
+  const { zipSync, strToU8 } = await import('fflate');
+  const { parseFileBuffer } = await import('../src/adapters/bambu-file-parser.js');
+  const file = Buffer.from(zipSync({ 'Metadata/slice_info.config': strToU8(xml) }));
+  const adapter = {
+    getSnapshot: async () => snap,
+    refetchJobWeights: async () => ({ kind: 'ok' as const, weights: parseFileBuffer('x.gcode.3mf', file, 1) }),
+  };
+  const fromFile = await materialEnricher(adapter, cfg, () => null)({ ...deferred.pending, fileUnreadable: false });
+  assert.equal(fromFile?.source, 'Druckdatei');
+  assert.deepEqual(fromFile?.lines.map(l => [l.grams, l.measureSource, l.filament_type, l.slotRef.value]), [[33.5, 'slicer_file', 'PETG', 1]]);
+});
+
+test('template: an earlier finished cloud run of the same plate (same printer, name, planned time)', async () => {
+  const { templateCloudTask } = await import('../src/material-sources.js');
+  const T = Date.parse('2026-10-07T13:00:00Z');
+  const tasks = parseCloudTasks({ hits: [
+    { id: 1, deviceId: 'S8', title: 'Oberschale', startTime: '2026-10-06T09:45:34Z', costTime: 151 * 60, status: 2, amsDetailMapping: [{ ams: 0, weight: 66.85, filamentType: 'PC' }] },
+    { id: 2, deviceId: 'S8', title: 'Oberschale', startTime: '2026-10-06T09:07:02Z', costTime: 37 * 60, status: 2, amsDetailMapping: [{ ams: 0, weight: 6.71 }] },
+    { id: 3, deviceId: 'S8', title: 'Oberschale', startTime: '2026-10-06T10:00:00Z', costTime: 151 * 60, status: 3, amsDetailMapping: [{ ams: 0, weight: 50 }] },
+    { id: 4, deviceId: 'S5', title: 'Oberschale', startTime: '2026-10-06T09:56:38Z', costTime: 168 * 60, status: 2, amsDetailMapping: [{ ams: 0, weight: 104.34 }] },
+  ] });
+  assert.equal(templateCloudTask(tasks, { serial: 'S8', title: 'Oberschale', estimatedMin: 153, before: T })?.id, '1', 'planned time decides the plate');
+  assert.equal(templateCloudTask(tasks, { serial: 'S8', title: 'Oberschale', estimatedMin: 300, before: T }), null, 'no plate with that time');
+  assert.equal(templateCloudTask(tasks, { serial: 'S6', title: 'Oberschale', estimatedMin: 168, before: T }), null, 'other printers do not count');
+  const lines = cloudTaskLines(tasks[0], [slot(0, 2, 40, 'U3')], null, { template: true, activeSlot: 2 });
+  assert.deepEqual(lines.map(l => [l.grams, l.slotRef.value, l.measureSource, l.tray_uuid]), [[66.85, 2, 'template', 'U3']],
+    'single filament: booked on the slot this run used');
+});
+
+test('preview: the cloud task\'s plate thumbnail for a job without a file preview', async () => {
+  const { previewTask } = await import('../src/material-sources.js');
+  const { runSteps } = await import('./helpers/bridge.js');
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const start = Date.parse('2026-10-06T12:00:00Z');
+  const tasks = parseCloudTasks({ hits: [
+    { id: 7, deviceId: 'TESTSERIAL', title: 'Oberschale', startTime: '2026-10-05T09:45:34Z', costTime: 151 * 60, status: 2,
+      cover: 'https://example.com/plate.png', amsDetailMapping: [{ ams: 0, weight: 66.85 }] },
+  ] });
+  // LAN job (no cloud task of its own): an earlier run of the same plate.
+  assert.equal(previewTask(tasks, { serial: 'TESTSERIAL', ids: [], startedAt: start, finishedAt: start + 1000, title: 'Oberschale', estimatedMin: 152 })?.id, '7');
+  assert.equal(previewTask(tasks, { serial: 'TESTSERIAL', ids: [], startedAt: start, finishedAt: start + 1000, title: 'Oberschale', estimatedMin: 30 }), null);
+
+  const dir = tempDir(), clock = new Clock(start), be = new FakeBackend();
+  const fetched: string[] = [];
+  const cloud = { listTasks: async () => tasks, fetchCover: async (u: string) => { fetched.push(u); return png; } };
+  const run = (over: object) => () => ({ status: 'printing' as const, printFile: 'Oberschale', jobKey: 'task:1', jobState: 'printing' as const, progressPct: 1, etaSec: 152 * 60, ...over });
+  await runSteps([run({}), run({ progressPct: 5 }), run({ progressPct: 6 }), run({ progressPct: 7 }), run({ progressPct: 8 }), run({ progressPct: 9 }), run({ progressPct: 10 }), run({ progressPct: 11 })],
+    { dir, backend: be, clock, cloudSource: () => cloud });
+  const previews = be.calls.filter(c => c.body.print_preview).map(c => c.body.print_preview);
+  assert.equal(previews.length, 1, 'sent once per job');
+  assert.equal(previews[0]!.print_file, 'Oberschale');
+  assert.equal(Buffer.from(previews[0]!.png_base64, 'base64').equals(png), true);
+  assert.deepEqual(fetched, ['https://example.com/plate.png']);
+});
+
+test('job file: announce, upload to the signed URL, confirm; known content is only linked', async () => {
+  const { uploadJobFile } = await import('../src/job-files.js');
+  const { cfg } = await import('./helpers/bridge.js');
+  const buf = Buffer.from('PK\x03\x04 fake 3mf');
+  const sent: Array<Record<string, unknown>> = [];
+  let known = false;
+  const send = async (b: IngestBody) => {
+    sent.push(b.job_file as unknown as Record<string, unknown>);
+    if (b.job_file?.done) return { status: 200, data: { status: 'stored' } };
+    return { status: 200, data: known ? { status: 'exists' } : { status: 'upload', upload_url: 'https://x/upload?token=t' } };
+  };
+  const puts: string[] = [];
+  const put = async (u: string, b: Buffer) => { puts.push(`${u} ${b.length}`); return 200; };
+  const f = { printFile: 'Box', fileName: 'Box.gcode.3mf', buf };
+  assert.equal(await uploadJobFile(send, cfg(), 'task:1@2', f, put), 'stored');
+  assert.deepEqual(puts, [`https://x/upload?token=t ${buf.length}`]);
+  assert.equal(sent[0].sha256, (await import('node:crypto')).createHash('sha256').update(buf).digest('hex'));
+  assert.equal(sent[1].done, true);
+  known = true;
+  assert.equal(await uploadJobFile(send, cfg(), 'task:2@3', f, put), 'exists');
+  assert.equal(puts.length, 1, 'no second upload of the same content');
+});
+
+test('cloud titles with a path prefix match the print name', () => {
+  const tasks = parseCloudTasks({ hits: [{ id: 9, deviceId: 'S1', title: 'AMS 1 / 2 Pro Kit (No Glue Needed)', status: 2, costTime: 36060,
+    startTime: '2026-10-06T15:37:10Z', cover: 'https://x/c.png', amsDetailMapping: [{ ams: 3, weight: 553.61, filamentType: 'PLA' }] }] });
+  const t = templateCloudTask(tasks, { serial: 'S1', title: '2 Pro Kit (No Glue Needed)', estimatedMin: 601, before: Date.parse('2026-10-08T00:00:00Z') });
+  assert.equal(t?.id, '9');
+});
+
+test('cloud login from the config: one client per account, a corrected password is used at once', () => {
+  const withLogin = (email: string, password: string) => ({ ...cfg(), bambuCloudEmail: email, bambuCloudPassword: password });
+  const first = cloudSourceFor(withLogin('a@b.c', 'wrong'));
+  assert.ok(first);
+  assert.equal(cloudSourceFor(withLogin('A@b.c', 'wrong')), first);
+  assert.notEqual(cloudSourceFor(withLogin('a@b.c', 'right')), first);
+  assert.equal(cloudSourceFor(cfg()), null);
+});

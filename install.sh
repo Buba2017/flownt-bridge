@@ -6,6 +6,20 @@
 # Lädt die passende fertige Binary aus den GitHub-Releases (kein Node/Repo nötig),
 # löst die macOS-Quarantäne automatisch, richtet Autostart ein (launchd bzw. systemd)
 # und startet die Bridge. Erneutes Ausführen aktualisiert auf die neueste Version.
+#
+# Linux (systemd): optional settings passed to the installer are stored in
+# flownt-bridge.env (mode 0600) next to the binary and kept on later updates, e.g. to
+# reach the web UI from other devices on the LAN (Raspberry Pi):
+#
+#   curl -fsSL …/install.sh | sudo FLOWNT_BRIDGE_HOST=0.0.0.0 FLOWNT_BRIDGE_ADMIN_PASSWORD='…' bash
+#
+# Supported: FLOWNT_BRIDGE_HOST, FLOWNT_BRIDGE_ADMIN_PASSWORD, FLOWNT_ALLOWED_ORIGINS,
+# FLOWNT_EDGE_URL, FLOWNT_BRIDGE_ALLOWED_HOSTS. Without FLOWNT_BRIDGE_HOST the bridge
+# listens on this computer only (127.0.0.1).
+#
+# The binary is verified against the release's SHA256SUMS; the install stops if it does
+# not match. FLOWNT_VERSION=v0.10.0 installs a specific release; FLOWNT_SKIP_CHECKSUM=1
+# skips the check (only for old releases published without SHA256SUMS).
 set -euo pipefail
 
 REPO="Buba2017/flownt-bridge"
@@ -30,7 +44,19 @@ case "$ARCH" in
   *) say "${RED}Nicht unterstützte Architektur: $ARCH${NC}"; exit 1 ;;
 esac
 ASSET="flownt-bridge-${PLATFORM}-${A}"
-URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+
+# Pin one release for binary and checksums, so a release published in between cannot
+# mix them up: FLOWNT_VERSION, else the tag "latest" currently redirects to.
+TAG="${FLOWNT_VERSION:-}"
+if [ -z "$TAG" ]; then
+  TAG="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" 2>/dev/null | sed -n 's#.*/releases/tag/##p')"
+fi
+if [ -n "$TAG" ]; then
+  BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+else
+  BASE_URL="https://github.com/${REPO}/releases/latest/download"
+fi
+URL="${BASE_URL}/${ASSET}"
 
 # Installationsziel: System-Pfad bei Root-Install (Linux → systemd-System-Dienst),
 # sonst pro Nutzer. Verhindert, dass der Dienst (als Nicht-Root-User) eine Binary
@@ -50,6 +76,32 @@ if ! curl -fSL --progress-bar "$URL" -o "$BIN.tmp"; then
   say "  https://github.com/${REPO}/releases/latest"
   rm -f "$BIN.tmp"; exit 1
 fi
+
+# Prüfsumme gegen SHA256SUMS des Releases prüfen (fail closed)
+checksum_fail() {
+  say "${RED}Prüfsummen-Fehler:${NC} $1"
+  say "  Die Binary wurde NICHT installiert. Bitte später erneut versuchen oder melden:"
+  say "  https://github.com/${REPO}/issues"
+  say "  (Nur für ältere Releases ohne SHA256SUMS: mit FLOWNT_SKIP_CHECKSUM=1 erneut ausführen.)"
+  rm -f "$BIN.tmp"; exit 1
+}
+if [ "${FLOWNT_SKIP_CHECKSUM:-}" = "1" ]; then
+  say "${YELLOW}⚠ Prüfsumme NICHT geprüft (FLOWNT_SKIP_CHECKSUM=1).${NC}"
+else
+  SUMS="$(curl -fsSL "${BASE_URL}/SHA256SUMS" 2>/dev/null)" \
+    || checksum_fail "SHA256SUMS für ${TAG:-latest} nicht gefunden."
+  EXPECTED="$(printf '%s\n' "$SUMS" | awk -v f="$ASSET" '$2 == f || $2 == "*" f { print tolower($1); exit }')"
+  [ -n "$EXPECTED" ] || checksum_fail "kein Eintrag für ${ASSET} in SHA256SUMS."
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL="$(sha256sum "$BIN.tmp" | awk '{ print tolower($1) }')"
+  elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL="$(shasum -a 256 "$BIN.tmp" | awk '{ print tolower($1) }')"
+  else
+    checksum_fail "weder sha256sum noch shasum vorhanden."
+  fi
+  [ "$ACTUAL" = "$EXPECTED" ] || checksum_fail "${ASSET} stimmt nicht mit SHA256SUMS überein (erwartet ${EXPECTED}, erhalten ${ACTUAL})."
+  say "${GREEN}✓ Prüfsumme ok${NC} (${TAG:-latest})"
+fi
 mv "$BIN.tmp" "$BIN"
 chmod +x "$BIN"
 # Defensiv: falls doch ein Quarantäne-Flag existiert, entfernen (macOS)
@@ -65,19 +117,34 @@ if [ "$PLATFORM" = "macos" ]; then
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>app.flownt.bridge</string>
-  <key>ProgramArguments</key><array><string>$BIN</string></array>
+  <key>ProgramArguments</key><array><string>$BIN</string><string>--log-file</string><string>$INSTALL_DIR/bridge.log</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$INSTALL_DIR/bridge.log</string>
-  <key>StandardErrorPath</key><string>$INSTALL_DIR/bridge.log</string>
+  <key>StandardOutPath</key><string>$INSTALL_DIR/bridge.stdout.log</string>
+  <key>StandardErrorPath</key><string>$INSTALL_DIR/bridge.stdout.log</string>
 </dict></plist>
 EOF
+  # The bridge writes bridge.log itself and rotates it (5 MB × 3); launchd only catches
+  # output from before logging starts (e.g. a crash on startup) in bridge.stdout.log.
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
   say "${GREEN}✓ Autostart eingerichtet${NC} (launchd, startet bei Anmeldung)"
   RUN_HINT="launchctl unload $PLIST   # stoppen"
   LOG_HINT="tail -f $INSTALL_DIR/bridge.log"
 else
+  # Settings for the service (see header). Values are double-quoted for systemd.
+  ENV_FILE="$INSTALL_DIR/flownt-bridge.env"
+  OLD_UMASK="$(umask)"; umask 077   # the file may hold the admin password
+  for VAR in FLOWNT_BRIDGE_HOST FLOWNT_BRIDGE_ADMIN_PASSWORD FLOWNT_ALLOWED_ORIGINS FLOWNT_EDGE_URL FLOWNT_BRIDGE_ALLOWED_HOSTS; do
+    VAL="${!VAR:-}"
+    [ -z "$VAL" ] && continue
+    touch "$ENV_FILE"
+    { grep -v "^${VAR}=" "$ENV_FILE" || true; } > "$ENV_FILE.tmp"
+    ESC="$(printf '%s' "$VAL" | sed -e 's/[\\"$`]/\\&/g')"
+    printf '%s="%s"\n' "$VAR" "$ESC" >> "$ENV_FILE.tmp"
+    mv "$ENV_FILE.tmp" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+  done
+  umask "$OLD_UMASK"
   UNIT="[Unit]
 Description=Flownt Bridge — 3D-Drucker Monitoring & Etikettendruck
 After=network-online.target
@@ -89,7 +156,8 @@ ExecStart=$BIN
 Restart=always
 RestartSec=15
 SyslogIdentifier=flownt-bridge
-Environment=NODE_ENV=production"
+Environment=NODE_ENV=production
+EnvironmentFile=-$ENV_FILE"
   if [ "$(id -u)" = "0" ]; then
     # Root/Pi → System-Service
     SVC_USER="${SUDO_USER:-$(getent passwd | awk -F: '$3>=1000 && $3<65534 && $6 ~ /^\/home/ {print $1; exit}')}"
@@ -119,10 +187,14 @@ fi
 
 # 4) Adresse ermitteln + Abschluss
 sleep 2
-if [ "$PLATFORM" = "macos" ]; then
-  IP="localhost"
-else
-  IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; IP="${IP:-localhost}"
+IP="localhost"
+LAN=0
+if [ "$PLATFORM" = "linux" ] && [ -f "$ENV_FILE" ]; then
+  BIND="$(sed -n 's/^FLOWNT_BRIDGE_HOST="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$ENV_FILE" | tail -1)"
+  case "$BIND" in
+    ""|localhost|127.*|::1|"[::1]") ;;
+    *) LAN=1; IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; IP="${IP:-localhost}" ;;
+  esac
 fi
 say ""
 say "${GREEN}${BOLD}✓ Flownt Bridge läuft!${NC}"
@@ -131,4 +203,14 @@ say "  Web-Oberfläche:  ${BOLD}http://${IP}:${PORT}${NC}"
 say "  Dort wählst du, was diese Bridge tun soll (Drucker überwachen / Etiketten drucken)."
 say "  Logs:            ${LOG_HINT}"
 say "  Stoppen:         ${RUN_HINT}"
-say ""
+if [ "$PLATFORM" = "linux" ] && [ "$LAN" = "0" ]; then
+  say ""
+  say "  ${YELLOW}Die Oberfläche ist nur auf diesem Gerät erreichbar (127.0.0.1).${NC} Von einem anderen Rechner:"
+  say "    ssh -L ${PORT}:127.0.0.1:${PORT} $(id -un)@$(hostname)   →   http://localhost:${PORT}"
+  say "  Oder fürs ganze Heimnetz freigeben (mit Passwort):"
+  say "    curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo FLOWNT_BRIDGE_HOST=0.0.0.0 FLOWNT_BRIDGE_ADMIN_PASSWORD='…' bash"
+elif [ "$LAN" = "1" ] && ! grep -q '^FLOWNT_BRIDGE_ADMIN_PASSWORD=' "$ENV_FILE"; then
+  say ""
+  say "  ${YELLOW}Achtung: im Netzwerk erreichbar, aber ohne Admin-Passwort.${NC} Setze FLOWNT_BRIDGE_ADMIN_PASSWORD."
+fi
+say """"

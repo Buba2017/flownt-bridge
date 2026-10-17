@@ -1,21 +1,25 @@
 {
   "name": "flownt-bridge",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "description": "Local bridge connecting 3D printers to Flownt",
+  "license": "Elastic-2.0",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=dist/bundle.cjs --log-level=info --banner:js=\"const __importMetaUrl=require('url').pathToFileURL(__filename).href;\" --define:import.meta.url=__importMetaUrl",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "test:camera": "tsx --test tests/camera.test.ts",
+    "build": "node scripts/build.mjs",
     "package": "npm run build && pkg dist/bundle.cjs --targets node18-macos-arm64,node18-macos-x64,node18-win-x64,node18-linux-arm64,node18-linux-x64 --output dist/flownt-bridge --compress GZip",
-    "package:mac": "npm run build && pkg dist/bundle.cjs --targets node18-macos-arm64 --output dist/flownt-bridge-mac --compress GZip"
+    "package:mac": "npm run build && pkg dist/bundle.cjs --targets node18-macos-arm64 --output dist/flownt-bridge-mac --compress GZip",
+    "test:bambu": "tsx --test tests/bambu.test.ts"
   },
   "pkg": {
     "assets": [],
     "outputPath": "dist"
   },
   "dependencies": {
-    "basic-ftp": "^5.3.1",
     "express": "^4.19.2",
     "fflate": "^0.8.2",
     "mqtt": "^5.7.3",
@@ -26,6 +30,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.0",
     "@yao-pkg/pkg": "^6.19.0",
+    "aedes": "^1.2.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.15.0",
     "typescript": "^5.4.5"

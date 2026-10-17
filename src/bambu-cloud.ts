@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { parseCloudTasks, type CloudTask } from './material-sources.js';
 
 const BASE_URL = 'https://api.bambulab.com/v1/user-service';
 
@@ -10,24 +11,137 @@ const HEADERS = {
 
 interface LoginResponse {
   accessToken?: string;
+  refreshToken?: string;
+  expiresIn?: number;
   loginType?: string;
   message?: string;
 }
 
-interface Task {
-  deviceId?: string;
-  weight?: number;
-  status?: number;
-  costTime?: number;
+/** Bambu Cloud session as delivered by Flownt (bridge secret `bambu_cloud_token`). */
+export interface CloudToken {
+  accessToken: string;
+  refreshToken?: string;
+  /** Epoch ms; unknown when absent. */
+  expiresAt?: number;
 }
 
-interface TasksResponse {
-  hits?: Task[];
-  total?: number;
+/** Reads the print task history of a printer from the Bambu Cloud. */
+export interface CloudTaskSource {
+  /** Recent tasks of this printer; null when the cloud cannot be reached or rejects us. */
+  listTasks(serial: string): Promise<CloudTask[] | null>;
+  /** Downloads a task's plate thumbnail; null unless it is a PNG of at most 2 MB. */
+  fetchCover?(url: string): Promise<Buffer | null>;
 }
 
-export class BambuCloudClient {
+const MAX_COVER = 2 * 1024 * 1024;
+
+/** Plate thumbnail of a cloud task (signed https URL, no credentials needed). */
+export async function downloadCover(url: string): Promise<Buffer | null> {
+  if (!/^https:\/\//.test(url)) return null;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000), redirect: 'follow' });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const png = buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+    return png && buf.length <= MAX_COVER ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTasks(token: string, serial: string): Promise<{ status: number; tasks: CloudTask[] }> {
+  const url = `${BASE_URL}/my/tasks?deviceId=${encodeURIComponent(serial)}&limit=20`;
+  const res = await fetch(url, {
+    headers: { ...HEADERS, Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) return { status: res.status, tasks: [] };
+  return { status: res.status, tasks: parseCloudTasks(await res.json()) };
+}
+
+/**
+ * Token-based cloud access (preferred): the session comes encrypted from Flownt's
+ * "Mit Bambu Lab anmelden" dialog. An expired access token is renewed with the refresh
+ * token; the renewed session is handed to `onRefresh` so it survives restarts.
+ */
+export class BambuCloudSession implements CloudTaskSource {
+  private refreshing: Promise<boolean> | null = null;
+  fetchCover = downloadCover;
+
+  constructor(private token: CloudToken, private readonly onRefresh: (t: CloudToken) => void = () => {}) {}
+
+  get current(): CloudToken { return this.token; }
+
+  private async refresh(): Promise<boolean> {
+    if (!this.token.refreshToken) return false;
+    this.refreshing ??= (async () => {
+      try {
+        const res = await fetch(`${BASE_URL}/user/refreshtoken`, {
+          method: 'POST', headers: HEADERS,
+          body: JSON.stringify({ refreshToken: this.token.refreshToken }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const data = await res.json().catch(() => ({})) as LoginResponse;
+        if (!res.ok || !data.accessToken) {
+          console.warn(`[bambu-cloud] token refresh failed (${res.status})`);
+          return false;
+        }
+        this.token = {
+          accessToken: data.accessToken,
+          refreshToken: data.refreshToken || this.token.refreshToken,
+          expiresAt: typeof data.expiresIn === 'number' ? Date.now() + data.expiresIn * 1000 : undefined,
+        };
+        this.onRefresh(this.token);
+        console.log('[bambu-cloud] token refreshed');
+        return true;
+      } catch (err) {
+        console.warn('[bambu-cloud] token refresh error:', (err as Error).message);
+        return false;
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  /** Runs an authenticated call, renewing the session before the expiry and after a 401. */
+  private async authed<T>(what: string, call: (token: string) => Promise<{ status: number; value: T }>): Promise<T | null> {
+    try {
+      // Renew a day before the expiry instead of waiting for the 401.
+      if (this.token.expiresAt && this.token.expiresAt - Date.now() < 24 * 3_600_000) await this.refresh();
+      let r = await call(this.token.accessToken);
+      if (r.status === 401 && await this.refresh()) r = await call(this.token.accessToken);
+      if (r.status < 200 || r.status >= 300) {
+        console.warn(`[bambu-cloud] ${what} ${r.status}`);
+        return null;
+      }
+      return r.value;
+    } catch (err) {
+      console.warn(`[bambu-cloud] ${what} error:`, (err as Error).message);
+      return null;
+    }
+  }
+
+  listTasks(serial: string): Promise<CloudTask[] | null> {
+    return this.authed('task history', async token => {
+      const r = await fetchTasks(token, serial);
+      return { status: r.status, value: r.tasks };
+    });
+  }
+
+  /** Printers bound to the account, with their LAN access codes; null on failure. */
+  listDevices(): Promise<CloudDevice[] | null> {
+    return this.authed('device list', token => requestBoundDevices(token));
+  }
+}
+
+/**
+ * Legacy access with e-mail + password from the local bridge config. Accounts that get a
+ * login code by e-mail cannot use it; prefer the token from Flownt.
+ */
+export class BambuCloudClient implements CloudTaskSource {
   private token: string | null = null;
+  fetchCover = downloadCover;
   private tokenExpiry = 0;
 
   constructor(
@@ -59,44 +173,100 @@ export class BambuCloudClient {
     }
   }
 
-  async getLatestTaskWeight(serial: string): Promise<number | null> {
+  async listTasks(serial: string): Promise<CloudTask[] | null> {
     if (!await this.ensureToken()) return null;
     try {
-      const res = await fetch(`${BASE_URL}/my/tasks`, {
-        headers: { ...HEADERS, Authorization: `Bearer ${this.token}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) {
-        if (res.status === 401) this.token = null;
-        return null;
-      }
-      const data = await res.json() as TasksResponse;
-      const task = data.hits?.find(t => t.deviceId === serial);
-      if (!task) {
-        console.log('[bambu-cloud] Kein Task für Serial gefunden');
-        return null;
-      }
-      return typeof task.weight === 'number' ? task.weight : null;
+      const r = await fetchTasks(this.token!, serial);
+      if (r.status === 401) this.token = null;
+      return r.status >= 200 && r.status < 300 ? r.tasks : null;
     } catch (err) {
       console.warn('[bambu-cloud] Tasks-Abruf Fehler:', err);
       return null;
     }
   }
+}
 
-  // Versucht bis zu maxAttempts mal mit delay dazwischen — cloud braucht etwas Zeit nach Druckende
-  async getLatestTaskWeightWithRetry(serial: string, maxAttempts = 4, delayMs = 8_000): Promise<number | null> {
-    for (let i = 0; i < maxAttempts; i++) {
-      if (i > 0) {
-        console.log(`[bambu-cloud] Warte ${delayMs / 1000}s, Versuch ${i + 1}/${maxAttempts}…`);
-        await new Promise<void>(r => setTimeout(r, delayMs));
-      }
-      const weight = await this.getLatestTaskWeight(serial);
-      if (weight != null) {
-        console.log(`[bambu-cloud] Gewicht erhalten: ${weight}g`);
-        return weight;
-      }
-    }
-    console.warn('[bambu-cloud] Gewicht nicht abrufbar nach allen Versuchen');
-    return null;
+// ── Access-code lookup (one-off login, nothing is persisted) ───────────────────
+// Used by the web UI to fill in the LAN access codes of printers bound to a Bambu
+// account. Neither the password nor the resulting token is stored.
+
+export type CloudLoginStep =
+  | { kind: 'token'; token: string }
+  | { kind: 'verifyCode' }               // Bambu e-mailed a one-time code
+  | { kind: 'tfa'; tfaKey: string }      // authenticator app code required
+  | { kind: 'error'; message: string };
+
+export interface CloudDevice {
+  serial: string;
+  name: string;
+  model: string;
+  accessCode: string;
+  online: boolean;
+}
+
+async function postJson(url: string, body: unknown): Promise<{ data: Record<string, unknown>; setCookie: string[] }> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: HEADERS,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await res.text();
+  let data: Record<string, unknown> = {};
+  try { data = text ? JSON.parse(text) as Record<string, unknown> : {}; } catch { data = { message: text.slice(0, 200) }; }
+  return { data, setCookie: res.headers.raw()['set-cookie'] ?? [] };
+}
+
+function stepFrom(data: Record<string, unknown>): CloudLoginStep {
+  if (typeof data.accessToken === 'string' && data.accessToken) return { kind: 'token', token: data.accessToken };
+  if (data.loginType === 'verifyCode') return { kind: 'verifyCode' };
+  if (data.loginType === 'tfa' && typeof data.tfaKey === 'string') return { kind: 'tfa', tfaKey: data.tfaKey };
+  return { kind: 'error', message: String(data.message ?? data.error ?? 'Login fehlgeschlagen') };
+}
+
+export async function cloudLogin(email: string, password: string): Promise<CloudLoginStep> {
+  const { data } = await postJson(`${BASE_URL}/user/login`, { account: email, password, apiError: '' });
+  const step = stepFrom(data);
+  if (step.kind === 'verifyCode') {
+    // The login answer only says a code is needed; requesting it is a separate call.
+    await postJson(`${BASE_URL}/user/sendemail/code`, { email, type: 'codeLogin' });
   }
+  return step;
+}
+
+export async function cloudLoginWithEmailCode(email: string, code: string): Promise<CloudLoginStep> {
+  const { data } = await postJson(`${BASE_URL}/user/login`, { account: email, code });
+  return stepFrom(data);
+}
+
+export async function cloudLoginWithTfa(tfaKey: string, code: string): Promise<CloudLoginStep> {
+  const { data, setCookie } = await postJson('https://bambulab.com/api/sign-in/tfa', { tfaKey, tfaCode: code });
+  const cookie = setCookie.find(c => c.startsWith('token='));
+  if (cookie) return { kind: 'token', token: cookie.split(';', 1)[0].slice('token='.length) };
+  return stepFrom(data);
+}
+
+async function requestBoundDevices(token: string): Promise<{ status: number; value: CloudDevice[] }> {
+  const res = await fetch('https://api.bambulab.com/v1/iot-service/api/user/bind', {
+    headers: { ...HEADERS, Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) return { status: res.status, value: [] };
+  const data = await res.json() as { devices?: Array<Record<string, unknown>> };
+  return {
+    status: res.status,
+    value: (data.devices ?? []).map(d => ({
+      serial: String(d.dev_id ?? ''),
+      name: String(d.name ?? ''),
+      model: String(d.dev_product_name ?? d.dev_model_name ?? ''),
+      accessCode: String(d.dev_access_code ?? ''),
+      online: d.online === true,
+    })).filter(d => d.serial),
+  };
+}
+
+export async function fetchBoundDevices(token: string): Promise<CloudDevice[]> {
+  const r = await requestBoundDevices(token);
+  if (r.status < 200 || r.status >= 300) throw new Error(`Bambu Cloud ${r.status}`);
+  return r.value;
 }

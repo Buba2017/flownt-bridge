@@ -59,12 +59,17 @@ function mapJobResult(state: string): JobResult | null {
   }
 }
 
+const isActive = (s: PrinterSnapshot['status'] | null) => s === 'printing' || s === 'paused';
+
 export class PrusaLinkAdapter implements Adapter {
   private baseUrl: string;
   private apiKey: string;
   private prevStatus: PrinterSnapshot['status'] | null = null;
   private parsedFilamentWeights: FilamentWeight[] | null = null;
   private currentFileName: string | null = null;
+  // Bumped per new print: a lookup still running for an earlier print is discarded.
+  private jobSeq = 0;
+  private fetching = false;
 
   constructor(baseUrl: string, apiKey = '') {
     // Nutzer geben oft nur die IP ein — Schema ergänzen.
@@ -83,11 +88,12 @@ export class PrusaLinkAdapter implements Adapter {
   // Filamentgewichts-Parsing laden. Bei .bgcode ist das Parsing Best-Effort
   // (unkomprimierte Metadaten-Blöcke); liefert es nichts, wird der Druck ohne
   // Gewichte geloggt.
-  private async fetchJobAndFile(): Promise<void> {
+  private async fetchJobAndFile(seq: number): Promise<void> {
     try {
       const res = await fetch(`${this.baseUrl}/api/v1/job`, { headers: this.headers(), signal: AbortSignal.timeout(8000) });
       if (res.status === 204 || !res.ok) return;
       const job = (await res.json()) as PrusaJob;
+      if (seq !== this.jobSeq) return;
       this.currentFileName = job.file?.display_name || job.file?.name || null;
 
       const download = job.file?.refs?.download;
@@ -98,9 +104,11 @@ export class PrusaLinkAdapter implements Adapter {
         return;
       }
       const buf = Buffer.from(await fileRes.arrayBuffer());
-      const weights = parseFileBuffer(this.currentFileName, buf);
+      const name = this.currentFileName;
+      const weights = parseFileBuffer(name, buf);
+      if (seq !== this.jobSeq) return;
       this.parsedFilamentWeights = weights;
-      console.log(`[prusa] Druckdatei geladen: ${this.currentFileName} → ${weights.length} Filament(e) geparst`);
+      console.log(`[prusa] Druckdatei geladen: ${name} → ${weights.length} Filament(e) geparst`);
     } catch (err) {
       console.warn('[prusa] fetchJobAndFile:', err);
     }
@@ -116,11 +124,19 @@ export class PrusaLinkAdapter implements Adapter {
       const hasJob = body.job != null;
       const printerStatus = mapState(state, hasJob);
 
-      const isNewPrint = this.prevStatus !== 'printing' && this.prevStatus !== 'paused' && printerStatus === 'printing';
-      if (isNewPrint) {
+      // New print (also one first seen paused, e.g. after a bridge restart).
+      if (!isActive(this.prevStatus) && isActive(printerStatus)) {
+        this.jobSeq++;
         this.parsedFilamentWeights = null;
         this.currentFileName = null;
-        this.fetchJobAndFile().catch(err => console.error('[prusa] fetchJobAndFile:', err));
+      }
+      // Without the file name the job has no identity (no print log): a lookup that
+      // failed at the start is repeated on the next poll.
+      if (isActive(printerStatus) && !this.currentFileName && !this.fetching) {
+        this.fetching = true;
+        this.fetchJobAndFile(this.jobSeq)
+          .catch(err => console.error('[prusa] fetchJobAndFile:', err))
+          .finally(() => { this.fetching = false; });
       }
       this.prevStatus = printerStatus;
 

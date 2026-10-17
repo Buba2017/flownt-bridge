@@ -1,0 +1,38 @@
+{
+  "_fixture": {
+    "source": "flownt-bridge journal on bridge-vm",
+    "seen_at": "2026-10-06T18:16:00+00:00",
+    "printer": "unknown (X1C/X2D/H2C fleet)",
+    "note": "command reply/echo on the report topic (not push_status)"
+  },
+  "print": {
+    "ams_mapping": [
+      0
+    ],
+    "ams_mapping2": [
+      {
+        "ams_id": 0,
+        "slot_id": 0
+      }
+    ],
+    "auto_bed_leveling": 2,
+    "bed_leveling": true,
+    "cfg": "4",
+    "command": "project_file",
+    "err_code": 0,
+    "extrude_cali_flag": 2,
+    "flow_cali": true,
+    "nozzle_mapping": [],
+    "nozzle_offset_cali": 2,
+    "param": "Metadata/plate_1.gcode",
+    "plate": 1,
+    "reason": "SUCCESS",
+    "result": "SUCCESS",
+    "sequence_id": "173",
+    "subtask_name": "Oberschale",
+    "task_type": 1,
+    "timelapse": false,
+    "toolhead_offset_cali": true,
+    "url": "file:///userdata/project_file.gcode.3mf"
+  }
+}
